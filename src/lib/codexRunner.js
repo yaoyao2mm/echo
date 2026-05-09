@@ -4,12 +4,13 @@ import path from "node:path";
 import { config } from "../config.js";
 import { resolveDesktopCodexCommand } from "./codexCommand.js";
 import { codexCompatibleModel, listUnsupportedCodexModels, normalizeAllowedPermissionModes } from "./codexRuntime.js";
+import { configuredWorkspaces } from "./codexWorkspaceConfig.js";
 import { managedWorkspaces } from "./codexWorkspaceManager.js";
 import { buildProxyEnv } from "./http.js";
 
 export function publicWorkspaces() {
   const byKey = new Map();
-  for (const workspace of [...config.codex.workspaces, ...managedWorkspaces()]) {
+  for (const workspace of [...configuredWorkspaces(), ...managedWorkspaces()]) {
     const id = String(workspace.id || "").trim();
     const workspacePath = String(workspace.path || "").trim();
     if (!id || !workspacePath) continue;

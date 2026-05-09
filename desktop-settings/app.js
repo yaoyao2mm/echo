@@ -512,7 +512,8 @@ async function saveConfig() {
     fillForm(result.fields);
     renderWorkspaceRows(parseWorkspaceValue(valueOf(result.fields, "ECHO_CODEX_WORKSPACES")));
     await loadPairing();
-    writeOutput("Saved. Restart the desktop agent for running services to pick up the new config.");
+    await loadHealth({ quiet: true });
+    writeOutput("Saved. Workspace changes sync automatically. Restart the desktop agent for backend, network, or permission changes.");
   } catch (error) {
     writeOutput(error.message, true);
   }

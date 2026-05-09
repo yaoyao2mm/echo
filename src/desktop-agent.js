@@ -1,3 +1,4 @@
+import { watchFile } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "./config.js";
@@ -10,7 +11,8 @@ import {
   maybeCleanupCodexSessionWorktrees,
   prepareCodexSessionWorktree
 } from "./lib/codexWorktree.js";
-import { createManagedWorkspace, workspaceCreationRoot } from "./lib/codexWorkspaceManager.js";
+import { workspaceConfigFilePath } from "./lib/codexWorkspaceConfig.js";
+import { createManagedWorkspace, managedWorkspaceFilePath, workspaceCreationRoot } from "./lib/codexWorkspaceManager.js";
 import {
   createDesktopBackends,
   createDesktopRuntimeMap,
@@ -41,6 +43,10 @@ const pendingSessionEventRetries = new Map();
 const sessionEventRetryOutboxPath = path.join(config.dataDir, "desktop-session-event-outbox.json");
 let sessionEventRetryTimer = null;
 let sessionEventOutboxSaveTimer = null;
+let agentSnapshotPostPromise = null;
+let agentSnapshotPostAgain = false;
+let lastPostedAgentSnapshotSignature = "";
+let lastAgentSnapshotError = "";
 
 console.log("Echo desktop agent is running.");
 console.log(`Relay: ${config.relayUrl}`);
@@ -78,6 +84,7 @@ console.log("Waiting for mobile agent tasks.\n");
 await loadSessionEventRetryOutbox();
 
 if (desktopBackends.size > 0) {
+  startAgentSnapshotSync();
   setInterval(() => {
     scheduleCodexRuntimeRefresh();
   }, 10 * 60 * 1000).unref?.();
@@ -727,6 +734,73 @@ function isRetryableRelayError(error) {
 
 function currentCodexRuntime() {
   return desktopRuntimeSnapshot(desktopBackends);
+}
+
+function startAgentSnapshotSync() {
+  postAgentSnapshot("startup", { force: true }).catch(() => {});
+
+  const interval = setInterval(() => {
+    postAgentSnapshot("periodic").catch(() => {});
+  }, 30000);
+  interval.unref?.();
+
+  watchAgentSnapshotFile(workspaceConfigFilePath());
+  watchAgentSnapshotFile(managedWorkspaceFilePath());
+}
+
+function watchAgentSnapshotFile(filePath) {
+  if (!filePath) return;
+  const watcher = watchFile(filePath, { interval: 2000 }, (current, previous) => {
+    if (current.mtimeMs === previous.mtimeMs && current.size === previous.size) return;
+    postAgentSnapshot(`workspace config changed: ${path.basename(filePath)}`, { force: true }).catch(() => {});
+  });
+  watcher.unref?.();
+}
+
+async function postAgentSnapshot(reason = "heartbeat", options = {}) {
+  if (agentSnapshotPostPromise) {
+    agentSnapshotPostAgain = Boolean(options.force || agentSnapshotPostAgain);
+    return agentSnapshotPostPromise;
+  }
+
+  const snapshot = {
+    agentId,
+    workspaces: publicWorkspaces(),
+    runtime: currentCodexRuntime()
+  };
+  const signature = JSON.stringify({
+    workspaces: snapshot.workspaces,
+    runtime: snapshot.runtime
+  });
+
+  if (!options.force && signature === lastPostedAgentSnapshotSignature) return null;
+
+  agentSnapshotPostPromise = postJson("/api/agent/codex/heartbeat", snapshot)
+    .then((result) => {
+      lastPostedAgentSnapshotSignature = signature;
+      lastAgentSnapshotError = "";
+      if (reason !== "periodic") {
+        console.log(`[agent snapshot] ${reason}; ${snapshot.workspaces.length} workspace${snapshot.workspaces.length === 1 ? "" : "s"} advertised.`);
+      }
+      return result;
+    })
+    .catch((error) => {
+      const message = formatFetchError(error);
+      if (message !== lastAgentSnapshotError) {
+        console.error(`[agent snapshot] ${message}`);
+      }
+      lastAgentSnapshotError = message;
+      return null;
+    })
+    .finally(() => {
+      agentSnapshotPostPromise = null;
+      if (agentSnapshotPostAgain) {
+        agentSnapshotPostAgain = false;
+        postAgentSnapshot("workspace config changed", { force: true }).catch(() => {});
+      }
+    });
+
+  return agentSnapshotPostPromise;
 }
 
 async function refreshCodexRuntimeStatus() {

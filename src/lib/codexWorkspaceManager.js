@@ -2,8 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { config } from "../config.js";
+import { configuredWorkspaces } from "./codexWorkspaceConfig.js";
 
 const managedWorkspaceFile = path.join(config.dataDir, "codex-workspaces.json");
+
+export function managedWorkspaceFilePath() {
+  return managedWorkspaceFile;
+}
 
 export function managedWorkspaces() {
   return readManagedWorkspaces().map(toPublicWorkspace);
@@ -20,7 +25,7 @@ export function createManagedWorkspace(input = {}) {
 
   const directoryName = sanitizeDirectoryName(input.directoryName || label);
   const workspacePath = createUniqueDirectory(root, directoryName);
-  const existing = [...config.codex.workspaces, ...readManagedWorkspaces()];
+  const existing = [...configuredWorkspaces(), ...readManagedWorkspaces()];
   const workspace = {
     id: uniqueWorkspaceId(slug(label), existing),
     label,
@@ -37,7 +42,7 @@ export function workspaceCreationRoot() {
   const configuredRoot = String(process.env.ECHO_CODEX_WORKSPACE_ROOT || "").trim();
   if (configuredRoot) return path.resolve(expandHome(configuredRoot));
 
-  const firstWorkspacePath = config.codex.workspaces.find((workspace) => workspace.path)?.path;
+  const firstWorkspacePath = configuredWorkspaces().find((workspace) => workspace.path)?.path;
   if (firstWorkspacePath) return path.dirname(firstWorkspacePath);
 
   return path.join(os.homedir(), "workspace", "projects");

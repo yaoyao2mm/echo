@@ -43,6 +43,7 @@ import {
   listCodexSessions,
   queueCodexSessionWorktreeAction,
   subscribeCodexSession,
+  updateCodexAgent,
   updateCodexQuickSkill,
   waitForCodexSessionApproval,
   waitForCodexFileRequest,
@@ -194,6 +195,30 @@ app.get("/api/agent/ping", (req, res) => {
     refine: getRefineStatus(),
     codex: codexStatus()
   });
+});
+
+app.post("/api/agent/codex/heartbeat", (req, res) => {
+  try {
+    if (config.mode !== "relay") {
+      return res.status(400).json({ error: "Agent heartbeat is only available in relay mode." });
+    }
+
+    const agent = updateCodexAgent({
+      id: req.body.agentId || req.body.agent?.id,
+      workspaces: req.body.workspaces || req.body.agent?.workspaces || [],
+      runtime: req.body.runtime || req.body.agent?.runtime || {}
+    });
+    res.json({
+      ok: true,
+      agent: {
+        id: agent.id,
+        lastSeenAt: agent.lastSeenAt
+      },
+      codex: codexStatus()
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
 });
 
 app.post("/api/agent/refine", async (req, res) => {
