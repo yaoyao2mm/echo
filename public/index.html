@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, shrink-to-fit=no"
+    />
+    <meta id="themeColorMeta" name="theme-color" content="#f5f6f8" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta id="appleStatusBarMeta" name="apple-mobile-web-app-status-bar-style" content="default" />
+    <title>Echo</title>
+    <script>
+      try {
+        if (localStorage.getItem("echoTheme") === "dark") document.documentElement.dataset.theme = "dark";
+      } catch {}
+    </script>
+    <link rel="manifest" href="/manifest.webmanifest?v=111" />
+    <link rel="stylesheet" href="/styles.css?v=111" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="topbar-brand">
+          <button
+            id="toggleSessionsButton"
+            class="icon-button topbar-session-toggle"
+            type="button"
+            aria-label="打开会话列表"
+            aria-controls="codexSessionSidebar"
+            aria-expanded="false"
+            data-authenticated
+            hidden
+          >
+            ☰
+          </button>
+          <div class="topbar-brand-copy">
+            <div class="topbar-title-row">
+              <h1>Echo</h1>
+              <span id="mobileStatusIndicator" class="mobile-status-indicator" aria-hidden="true"></span>
+            </div>
+            <p id="statusText">连接中</p>
+          </div>
+        </div>
+        <div id="quickSkills" class="topbar-quick-skills" data-authenticated hidden>
+          <button
+            id="quickSkillsButton"
+            class="topbar-quick-deploy quick-skills-trigger"
+            type="button"
+            aria-label="打开快速指令"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            aria-controls="quickSkillsPanel"
+            title="快速指令"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M13.2 3.2 5.8 13h6.4l-1.2 7.8 7.4-10h-6.2l1-7.6Z"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.9"
+              />
+            </svg>
+          </button>
+          <section id="quickSkillsPanel" class="quick-skills-panel" role="dialog" aria-label="快速指令" hidden>
+            <div class="quick-skills-head">
+              <div>
+                <strong>快速指令</strong>
+                <span id="quickSkillsMeta">全局与当前项目</span>
+              </div>
+              <button id="quickSkillNewButton" class="icon-button quick-skill-add" type="button" aria-label="新增快速指令" title="新增快速指令">
+                +
+              </button>
+            </div>
+            <div id="quickSkillsList" class="quick-skills-list"></div>
+            <form id="quickSkillForm" class="quick-skill-form" hidden>
+              <input id="quickSkillId" type="hidden" />
+              <div class="quick-skill-form-head">
+                <strong id="quickSkillFormTitle">编辑指令</strong>
+              </div>
+              <label class="quick-skill-field" for="quickSkillTitle">
+                <span class="quick-skill-field-label">名称</span>
+                <input id="quickSkillTitle" type="text" autocomplete="off" maxlength="80" />
+              </label>
+              <div class="quick-skill-form-row quick-skill-choice-row">
+                <div class="quick-skill-choice composer-inline-select">
+                  <span class="quick-skill-field-label">范围</span>
+                  <select id="quickSkillScope" aria-label="选择快捷指令范围">
+                    <option value="project">当前项目</option>
+                    <option value="global">全局</option>
+                  </select>
+                </div>
+                <div class="quick-skill-choice composer-inline-select">
+                  <span class="quick-skill-field-label">模式</span>
+                  <select id="quickSkillMode" aria-label="选择快捷指令模式">
+                    <option value="execute">执行</option>
+                    <option value="plan">计划</option>
+                  </select>
+                </div>
+              </div>
+              <label class="quick-skill-checkbox" for="quickSkillRequiresSession">
+                <input id="quickSkillRequiresSession" type="checkbox" />
+                <span>需要当前会话</span>
+              </label>
+              <label class="quick-skill-field" for="quickSkillDescription">
+                <span class="quick-skill-field-label">说明</span>
+                <input id="quickSkillDescription" type="text" autocomplete="off" maxlength="240" />
+              </label>
+              <label class="quick-skill-field" for="quickSkillPrompt">
+                <span class="quick-skill-field-label">指令</span>
+                <textarea id="quickSkillPrompt" rows="4"></textarea>
+              </label>
+              <div class="quick-skill-form-actions">
+                <button id="quickSkillDeleteButton" class="secondary quick-skill-delete-button" type="button" hidden>删除</button>
+                <button id="quickSkillCancelButton" class="secondary" type="button">取消</button>
+                <button id="quickSkillSaveButton" class="primary" type="submit">保存</button>
+              </div>
+            </form>
+          </section>
+        </div>
+        <div id="fileBrowser" class="topbar-file-browser" data-authenticated hidden>
+          <button
+            id="fileBrowserButton"
+            class="topbar-quick-deploy file-browser-trigger"
+            type="button"
+            aria-label="浏览文件"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            aria-controls="fileBrowserPanel"
+            title="浏览文件"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M3.5 7.7c0-1.1.9-2 2-2h4l2 2h7c1.1 0 2 .9 2 2v6.6c0 1.1-.9 2-2 2h-13c-1.1 0-2-.9-2-2V7.7Z"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.8"
+              />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <section id="loginPanel" class="auth-panel" hidden>
+        <div>
+          <h2>登录 Echo</h2>
+          <p>登录后再连接桌面端。</p>
+          <p id="loginStatus" class="auth-status" role="status"></p>
+        </div>
+        <form id="loginForm" class="login-form">
+          <label class="field-label" for="loginUsername">用户名</label>
+          <input id="loginUsername" type="text" autocomplete="username" />
+          <label class="field-label" for="loginPassword">密码</label>
+          <input id="loginPassword" type="password" autocomplete="current-password" />
+          <button id="loginButton" class="primary" type="submit">登录</button>
+        </form>
+      </section>
+
+      <section id="pairingPanel" class="pairing-panel" hidden>
+        <div>
+          <h2>扫码配对</h2>
+          <p>打开 Echo Desktop 的概览页，扫描「手机扫码配对」二维码。</p>
+          <p id="pairingStatus" class="pairing-status" role="status"></p>
+        </div>
+        <div class="scanner-frame">
+          <video id="pairingVideo" playsinline muted></video>
+        </div>
+        <div class="pairing-actions">
+          <button id="scanPairingButton" class="primary" type="button">打开相机扫码</button>
+          <button id="stopScanButton" class="secondary" type="button" hidden>停止扫描</button>
+        </div>
+        <label class="field-label" for="pairingInput">或粘贴配对链接</label>
+        <div class="pairing-input-row">
+          <input id="pairingInput" type="text" autocomplete="off" placeholder="https://echo.example.com/?token=..." />
+          <button id="savePairingButton" class="secondary" type="button">配对</button>
+        </div>
+      </section>
+
+      <section id="codexView" class="codex-section" data-authenticated hidden>
+        <button id="sessionBackdrop" class="session-backdrop" type="button" aria-label="关闭会话列表" hidden></button>
+        <section id="fileBrowserPanel" class="file-browser-panel" role="dialog" aria-label="代码浏览" hidden>
+          <div class="file-browser-head">
+            <div>
+              <strong id="fileBrowserTitle">文件</strong>
+              <span id="fileBrowserMeta">当前工程</span>
+            </div>
+            <div class="file-browser-head-actions">
+              <button
+                id="fileBrowserRefreshButton"
+                class="icon-button file-browser-refresh"
+                type="button"
+                aria-label="刷新目录"
+                title="刷新目录"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M20 6v5h-5M4 18v-5h5M18.1 9a6.5 6.5 0 0 0-11-2.5L4 9.5M5.9 15a6.5 6.5 0 0 0 11 2.5L20 14.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.8"
+                  />
+                </svg>
+              </button>
+              <button
+                id="fileBrowserCloseButton"
+                class="icon-button file-browser-close"
+                type="button"
+                aria-label="关闭文件浏览"
+                title="关闭文件浏览"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M6 6l12 12M18 6 6 18"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-width="2"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div id="fileBrowserBreadcrumbs" class="file-browser-breadcrumbs" aria-label="路径"></div>
+          <div id="fileBrowserStatus" class="file-browser-status" role="status"></div>
+          <div id="fileBrowserList" class="file-browser-list"></div>
+          <section id="filePreview" class="file-preview" aria-label="文件预览" hidden>
+            <div class="file-preview-head">
+              <div>
+                <strong id="filePreviewTitle">预览</strong>
+                <span id="filePreviewMeta"></span>
+              </div>
+              <div class="file-preview-actions">
+                <button id="filePreviewInsertButton" class="icon-button file-preview-insert" type="button" aria-label="引用路径" title="引用路径">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M10.5 13.5 13.5 10.5M8.75 11.5 7.6 12.65a3.25 3.25 0 0 0 4.6 4.6l1.15-1.15M15.25 12.5l1.15-1.15a3.25 3.25 0 0 0-4.6-4.6l-1.15 1.15"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="1.8"
+                    />
+                  </svg>
+                </button>
+                <button id="filePreviewCloseButton" class="icon-button file-preview-close" type="button" aria-label="返回文件列表" title="返回文件列表">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M6 6l12 12M18 6 6 18"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-linecap="round"
+                      stroke-width="2"
+                    />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <pre id="filePreviewContent" class="file-preview-content"></pre>
+          </section>
+        </section>
+        <aside id="codexSessionSidebar" class="session-sidebar" aria-label="agent 会话">
+          <div class="sidebar-head">
+            <button
+              id="newCodexSessionButton"
+              class="sidebar-primary-action"
+              type="button"
+              aria-label="新对话"
+              title="新对话"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4L16.5 3.5Z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.8"
+                />
+              </svg>
+              <span>新对话</span>
+            </button>
+          </div>
+          <section id="projectSwitcher" class="sidebar-panel sidebar-panel-project" data-authenticated hidden>
+            <div class="sidebar-panel-head">
+              <strong>项目</strong>
+            </div>
+            <span id="projectPickerLabel" class="sr-only">等待桌面 agent</span>
+            <p id="projectPickerMeta" class="sidebar-panel-note">桌面端启动后会同步可切换项目。</p>
+            <div class="sidebar-tools project-session-tools">
+              <div class="session-filter" role="tablist" aria-label="会话筛选">
+                <button id="showActiveSessionsButton" class="active" type="button">最近</button>
+                <button id="showArchivedSessionsButton" type="button">归档</button>
+              </div>
+            </div>
+            <div class="sidebar-status project-session-status">
+              <strong id="codexStatusText">等待桌面 agent</strong>
+              <p id="codexQueueMeta" class="codex-runtime"></p>
+            </div>
+            <div id="projectSheetList" class="project-sheet-list sidebar-project-list" role="listbox" aria-label="项目列表"></div>
+            <div id="codexJobs" class="codex-jobs"></div>
+            <form id="projectCreateForm" class="project-create-form" hidden>
+              <label class="sr-only" for="projectCreateName">新工程名称</label>
+              <input id="projectCreateName" type="text" autocomplete="off" maxlength="80" placeholder="新工程名" />
+              <button id="projectCreateSubmit" class="project-create-submit" type="submit">创建</button>
+            </form>
+            <p id="projectSheetStatus" class="sidebar-panel-note"></p>
+            <button id="newProjectButton" class="project-create-trigger" type="button">新建项目</button>
+            <select id="codexProject" class="sr-only" tabindex="-1" aria-hidden="true"></select>
+          </section>
+
+          <section class="sidebar-panel sidebar-panel-appearance">
+            <div class="sidebar-panel-head">
+              <strong>偏好</strong>
+            </div>
+            <label class="theme-switch" for="themeModeToggle">
+              <span class="theme-switch-copy">
+                <span class="theme-switch-title">暗黑模式</span>
+                <span class="theme-switch-subtitle">夜间低亮度显示</span>
+              </span>
+              <input id="themeModeToggle" type="checkbox" role="switch" aria-label="暗黑模式" />
+              <span class="theme-switch-track" aria-hidden="true">
+                <span class="theme-switch-thumb">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M20 14.2A7.5 7.5 0 0 1 9.8 4a8.5 8.5 0 1 0 10.2 10.2Z" />
+                  </svg>
+                </span>
+              </span>
+            </label>
+            <label class="theme-switch" for="worktreeModeToggle">
+              <span class="theme-switch-copy">
+                <span class="theme-switch-title">隔离 worktree</span>
+                <span id="worktreeModeSubtitle" class="theme-switch-subtitle">新会话默认独立执行</span>
+              </span>
+              <input id="worktreeModeToggle" type="checkbox" role="switch" aria-label="隔离 worktree" />
+              <span class="theme-switch-track" aria-hidden="true">
+                <span class="theme-switch-thumb">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 7.5h6l2 2h8v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-9Z" />
+                  </svg>
+                </span>
+              </span>
+            </label>
+          </section>
+
+          <section class="sidebar-panel sidebar-panel-user">
+            <div class="sidebar-panel-head">
+              <strong>用户中心</strong>
+              <button
+                id="sidebarUserToggle"
+                class="icon-button sidebar-section-toggle"
+                type="button"
+                aria-label="展开用户中心"
+                aria-controls="sidebarUserBody"
+                aria-expanded="false"
+                title="用户中心"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm0 2c-3.314 0-6 1.79-6 4v1h12v-1c0-2.21-2.686-4-6-4Z"
+                    fill="currentColor"
+                  />
+                </svg>
+              </button>
+            </div>
+            <div id="sidebarUserBody" class="sidebar-user-body" hidden>
+              <div class="sidebar-user-card">
+                <div class="sidebar-user-identity">
+                  <span id="userBadge" class="user-badge" hidden></span>
+                  <p id="sidebarUserMeta" class="sidebar-user-meta">登录后可查看账号与配对状态。</p>
+                </div>
+                <div class="sidebar-user-actions">
+                  <button id="openPairingButton" class="top-pair-button" type="button" hidden>扫码配对</button>
+                  <button id="refreshStatus" class="secondary compact-action" type="button" hidden>刷新状态</button>
+                  <button id="logoutButton" class="top-logout-button" type="button" hidden>退出</button>
+                </div>
+              </div>
+            </div>
+          </section>
+        </aside>
+
+        <section class="codex-main" aria-label="当前 agent 会话">
+          <section class="conversation-head">
+            <div class="conversation-head-copy">
+              <strong id="activeSessionTitle">新会话</strong>
+              <p id="activeSessionMeta" class="codex-runtime">选择权限、模型和推理强度后直接发送。</p>
+            </div>
+          </section>
+          <div id="sessionStatusRail" class="session-status-rail" aria-live="polite" hidden></div>
+
+          <section id="codexJobDetail" class="codex-job-detail">
+            <div id="codexRunSummary" class="codex-run-summary"></div>
+            <div id="codexApprovals" class="codex-approvals" hidden></div>
+            <details class="run-log">
+              <summary>运行日志</summary>
+              <pre id="codexLog" class="codex-log"></pre>
+            </details>
+          </section>
+
+          <section class="composer">
+            <div class="composer-shell">
+              <div id="turnActivityLine" class="turn-activity-line" aria-live="polite" hidden>
+                <span class="turn-activity-dot" aria-hidden="true"></span>
+                <span class="turn-activity-label">终端</span>
+                <span id="turnActivityText" class="turn-activity-text"></span>
+              </div>
+              <div id="contextUsageDetailsLine" class="context-usage-details-line" aria-live="polite" hidden></div>
+              <div class="composer-statusbar" aria-label="输入状态">
+                <div class="composer-status-meta">
+                  <button id="composerAttachmentButton" class="composer-status-action" type="button" aria-label="附加截图">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M8.5 12.5 15 6a3.5 3.5 0 1 1 5 5l-8.5 8.5a5 5 0 0 1-7-7l9-9"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="1.8"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    id="composerPlanModeButton"
+                    class="composer-status-action composer-mode-button"
+                    type="button"
+                    aria-label="进入计划模式"
+                    aria-pressed="false"
+                    title="进入计划模式"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M8 6.5h10M8 12h10M8 17.5h10M4.8 6.5h.1M4.8 12h.1M4.8 17.5h.1"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    id="contextUsageIndicator"
+                    class="context-usage-ring"
+                    type="button"
+                    data-state="unknown"
+                    aria-label="上下文使用暂未同步"
+                    aria-expanded="false"
+                    aria-controls="contextUsageDetailsLine"
+                    title="上下文使用暂未同步"
+                  ></button>
+                  <button
+                    id="compactContextButton"
+                    class="composer-status-action"
+                    type="button"
+                    aria-label="压缩上下文"
+                    title="压缩上下文"
+                    disabled
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M8 4v4H4M16 4v4h4M8 20v-4H4M16 20v-4h4M9 9l-5-5M15 9l5-5M9 15l-5 5M15 15l5 5"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="1.8"
+                      />
+                    </svg>
+                  </button>
+                </div>
+                <div class="composer-status-right">
+                  <button
+                    id="composerStatusText"
+                    class="composer-status-text"
+                    type="button"
+                    aria-live="polite"
+                    aria-expanded="false"
+                    aria-controls="turnActivityLine"
+                    disabled
+                  ></button>
+                  <button
+                    id="stopCodexTurnButton"
+                    class="composer-status-action session-stop-action"
+                    type="button"
+                    aria-label="中断当前 turn"
+                    title="中断当前 turn"
+                    hidden
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <div id="composerAttachmentTray" class="composer-attachment-tray" hidden></div>
+              <div class="composer-editor">
+                <textarea id="codexPrompt" rows="1" placeholder="给 agent 发消息，继续当前话题，或者开启新话题。"></textarea>
+              </div>
+              <div class="composer-dock">
+                <div class="composer-toolbar" aria-label="当前会话配置">
+                  <div class="composer-inline-control composer-inline-select">
+                    <span class="composer-inline-kicker">后端</span>
+                    <select id="codexBackend" aria-label="选择执行后端"></select>
+                  </div>
+                  <div class="composer-inline-control composer-inline-select composer-inline-permission">
+                    <span class="composer-inline-kicker">权限</span>
+                    <select id="codexPermissionMode" aria-label="选择权限模式"></select>
+                  </div>
+                  <div class="composer-inline-control composer-inline-select">
+                    <span class="composer-inline-kicker">模型</span>
+                    <select id="codexModel" aria-label="选择模型"></select>
+                  </div>
+                  <div class="composer-inline-control composer-inline-select">
+                    <span class="composer-inline-kicker">推理</span>
+                    <select id="codexReasoningEffort" aria-label="选择推理强度"></select>
+                  </div>
+                  <button id="sendCodexButton" class="codex-submit composer-submit-inline" type="button">发送</button>
+                </div>
+              </div>
+            </div>
+            <input id="composerAttachmentInput" class="sr-only" type="file" accept="image/*" multiple />
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js?v=111" type="module"></script>
+  </body>
+</html>

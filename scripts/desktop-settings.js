@@ -1,0 +1,1030 @@
+#!/usr/bin/env node
+import crypto from "node:crypto";
+import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import express from "express";
+import dotenv from "dotenv";
+import QRCode from "qrcode";
+import { resolveDesktopCodexCommand } from "../src/lib/codexCommand.js";
+import { httpFetch } from "../src/lib/http.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const rootDir = path.resolve(__dirname, "..");
+const envFile = path.join(rootDir, ".env");
+const envExampleFile = path.join(rootDir, ".env.example");
+const staticDir = path.join(rootDir, "desktop-settings");
+
+dotenv.config({ path: envFile });
+
+if (process.argv.includes("-h") || process.argv.includes("--help") || process.argv.includes("help")) {
+  console.log("Usage: node scripts/desktop-settings.js [--open]");
+  process.exit(0);
+}
+
+const host = process.env.ECHO_SETTINGS_HOST || "127.0.0.1";
+const port = Number(process.env.ECHO_SETTINGS_PORT || 3891);
+const settingsKey = crypto.randomBytes(16).toString("hex");
+
+const fields = [
+  { key: "ECHO_RELAY_URL", section: "connection", type: "text" },
+  { key: "ECHO_TOKEN", section: "connection", type: "secret" },
+
+  { key: "ECHO_PROXY_URL", section: "network", type: "text" },
+  { key: "ECHO_PROXY_FALLBACK_DIRECT", section: "network", type: "boolean", defaultValue: "true" },
+  { key: "ECHO_NO_PROXY", section: "network", type: "text" },
+  { key: "ECHO_HTTP_TIMEOUT_MS", section: "network", type: "number", min: 1000, max: 300000 },
+
+  {
+    key: "POSTPROCESS_PROVIDER",
+    section: "refine",
+    type: "choice",
+    choices: ["auto", "volcengine", "openai", "ollama", "rules", "none"]
+  },
+  { key: "METIO_VOLCENGINE_CODING_API_KEY", section: "refine", type: "secret" },
+  { key: "METIO_VOLCENGINE_CODING_OPENAI_BASE_URL", section: "refine", type: "text" },
+  { key: "METIO_VOLCENGINE_CODING_CHAT_MODEL", section: "refine", type: "text" },
+  { key: "LLM_API_KEY", section: "refine", type: "secret" },
+  { key: "LLM_BASE_URL", section: "refine", type: "text" },
+  { key: "LLM_MODEL", section: "refine", type: "text" },
+  { key: "OLLAMA_BASE_URL", section: "refine", type: "text" },
+  { key: "OLLAMA_MODEL", section: "refine", type: "text" },
+
+  { key: "ECHO_CODEX_ENABLED", section: "codex", type: "boolean", defaultValue: "true" },
+  { key: "ECHO_CODEX_WORKSPACES", section: "codex", type: "textarea" },
+  { key: "ECHO_CODEX_APP_PATH", section: "codex", type: "text" },
+  {
+    key: "ECHO_CODEX_SANDBOX",
+    section: "codex",
+    type: "choice",
+    choices: ["workspace-write", "read-only", "danger-full-access"],
+    defaultValue: "workspace-write"
+  },
+  {
+    key: "ECHO_CODEX_APPROVAL_POLICY",
+    section: "codex",
+    type: "choice",
+    choices: ["on-request", "never"],
+    defaultValue: "on-request"
+  },
+  { key: "ECHO_CODEX_APPROVAL_TIMEOUT_MS", section: "codex", type: "number", min: 10000, max: 7200000, defaultValue: "300000" },
+  { key: "ECHO_CODEX_ALLOWED_PERMISSION_MODES", section: "codex", type: "text", defaultValue: "strict,approve,full" },
+  { key: "ECHO_CODEX_WORKTREE_MODE", section: "codex", type: "choice", choices: ["off", "optional", "always"], defaultValue: "off" },
+  { key: "ECHO_CODEX_WORKTREE_ROOT", section: "codex", type: "text", defaultValue: "~/.echo-voice/worktrees" },
+  { key: "ECHO_CODEX_WORKTREE_RETENTION_DAYS", section: "codex", type: "number", min: 1, max: 365, defaultValue: "14" },
+  { key: "ECHO_CODEX_TIMEOUT_MS", section: "codex", type: "number", min: 10000, max: 7200000 },
+
+  { key: "ECHO_CLAUDE_ENABLED", section: "claude", type: "boolean", defaultValue: "false" },
+  { key: "ECHO_CLAUDE_COMMAND", section: "claude", type: "text", defaultValue: "claude" },
+  { key: "ECHO_CLAUDE_BASE_URL", section: "claude", type: "text" },
+  { key: "ECHO_CLAUDE_AUTH_TOKEN", section: "claude", type: "secret" },
+  { key: "ECHO_CLAUDE_MODEL", section: "claude", type: "text" },
+  { key: "ECHO_CLAUDE_SUPPORTED_MODELS", section: "claude", type: "text", defaultValue: "sonnet,opus" },
+  { key: "ECHO_CLAUDE_PERMISSION_MODE", section: "claude", type: "text", defaultValue: "strict" },
+  { key: "ECHO_CLAUDE_ALLOWED_PERMISSION_MODES", section: "claude", type: "text", defaultValue: "strict" },
+  { key: "ECHO_CLAUDE_REASONING_EFFORT", section: "claude", type: "text" },
+  { key: "ECHO_CLAUDE_APPROVAL_TIMEOUT_MS", section: "claude", type: "number", min: 10000, max: 7200000, defaultValue: "300000" },
+  { key: "ECHO_CLAUDE_TIMEOUT_MS", section: "claude", type: "number", min: 10000, max: 7200000, defaultValue: "1800000" },
+  { key: "ECHO_CLAUDE_WORKTREE_MODE", section: "claude", type: "choice", choices: ["off", "optional", "always"], defaultValue: "off" },
+  { key: "ECHO_CLAUDE_SUBAGENT_MODEL", section: "claude", type: "text" },
+  { key: "ECHO_CLAUDE_AGENT_TEAMS_ENABLED", section: "claude", type: "boolean", defaultValue: "false" },
+  { key: "ECHO_AGENT_BACKENDS_JSON", section: "claude", type: "textarea" }
+];
+
+const fieldByKey = new Map(fields.map((field) => [field.key, field]));
+const secretKeys = new Set(fields.filter((field) => field.type === "secret").map((field) => field.key));
+const deprecatedEnvKeys = new Set([
+  "ECHO_CODEX_COMMAND",
+  "ECHO_CODEX_MODEL",
+  "ECHO_CODEX_REASONING_EFFORT",
+  "ECHO_CODEX_MODEL_REASONING_EFFORT",
+  "ECHO_CODEX_PROFILE"
+]);
+
+const app = express();
+app.use(express.json({ limit: "256kb" }));
+app.use(express.static(staticDir));
+
+app.use("/api", (req, res, next) => {
+  if (req.get("x-echo-settings-key") !== settingsKey) {
+    return res.status(401).json({ error: "Invalid settings key." });
+  }
+  next();
+});
+
+app.get("/api/state", async (req, res) => {
+  try {
+    const env = await readEnv();
+    const health = await buildHealth(env);
+    res.json({
+      ok: true,
+      envFile,
+      fields: toPublicFields(env),
+      health,
+      meta: {
+        platform: process.platform,
+        settingsHost: host,
+        settingsPort: port,
+        postprocessScope: env.ECHO_RELAY_URL ? "relay server" : "local desktop"
+      }
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/api/config", async (req, res) => {
+  try {
+    const env = await readEnv();
+    const updates = normalizePayload(req.body || {}, env);
+    await writeEnvUpdates(updates);
+    const nextEnv = await readEnv();
+    res.json({
+      ok: true,
+      fields: toPublicFields(nextEnv)
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/api/test/network", async (req, res) => {
+  try {
+    const result = await runNodeScript(["scripts/network-doctor.js"], 20000);
+    res.json({ ok: result.code === 0, ...result });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/api/test/refine", async (req, res) => {
+  try {
+    const sample =
+      String(req.body?.text || "").trim() ||
+      "嗯我想把手机输入的需求整理成适合本机 agent 执行的任务，不要太啰嗦。";
+    const env = await readEnv();
+    const result = env.ECHO_RELAY_URL ? await testRelayRefine(env, sample) : await testLocalRefine(sample);
+    res.json({ ok: result.code === 0, ...result });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/api/desktop/restart", async (req, res) => {
+  try {
+    const result = await runCommand("bash", ["scripts/macos-desktop-agent.sh", "restart"], 20000);
+    res.json({ ok: result.code === 0, ...result });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/api/desktop/update", async (req, res) => {
+  try {
+    const result = await runCommand("bash", ["scripts/desktop-update.sh"], 10 * 60 * 1000);
+    const ok = result.code === 0;
+    res.json({
+      ok,
+      restartRequired: ok,
+      ...result
+    });
+    if (ok) notifyDesktopShellUpdate();
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get("/api/pairing", async (req, res) => {
+  try {
+    const env = await readEnv();
+    const mobileUrl = buildMobileUrl(env);
+    if (!mobileUrl) {
+      return res.status(400).json({ error: "Set ECHO_RELAY_URL and ECHO_TOKEN before pairing." });
+    }
+    const qrSvg = await QRCode.toString(mobileUrl, {
+      type: "svg",
+      margin: 1,
+      width: 260,
+      color: {
+        dark: "#17202a",
+        light: "#ffffff"
+      }
+    });
+    res.json({
+      ok: true,
+      mobileUrl,
+      qrSvg
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get("/api/desktop/health", async (req, res) => {
+  try {
+    const env = await readEnv();
+    res.json({
+      ok: true,
+      health: await buildHealth(env)
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get("/api/workspaces/suggestions", async (req, res) => {
+  try {
+    const env = await readEnv();
+    res.json({
+      ok: true,
+      items: await discoverWorkspaceSuggestions(env)
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get("/api/system/directories", async (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      ...(await listDirectories(req.query.path))
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/api/system/open", async (req, res) => {
+  try {
+    const target = req.body?.target || "";
+    const url = systemOpenUrl(target);
+    if (!url) {
+      return res.status(400).json({ error: "Unknown system target." });
+    }
+    const result = await runCommand("open", [url], 5000);
+    res.json({ ok: result.code === 0, ...result });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get("*", (req, res) => {
+  res.sendFile(path.join(staticDir, "index.html"));
+});
+
+const server = app.listen(port, host, () => {
+  const address = server.address();
+  const actualPort = typeof address === "object" && address ? address.port : port;
+  const url = `http://${host}:${actualPort}/?key=${settingsKey}`;
+  console.log("Echo desktop settings is running.");
+  console.log(url);
+  if (process.argv.includes("--open")) openBrowser(url);
+});
+
+server.on("error", (error) => {
+  console.error(error.message);
+  process.exit(1);
+});
+
+async function readEnv() {
+  const content = await readEnvContent();
+  return dotenv.parse(content);
+}
+
+async function readEnvContent() {
+  try {
+    return await fs.readFile(envFile, "utf8");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  try {
+    return await fs.readFile(envExampleFile, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function toPublicFields(env) {
+  const output = {};
+  for (const field of fields) {
+    const value = env[field.key] ?? field.defaultValue ?? "";
+    output[field.key] = field.type === "secret" ? { value: "", secret: true, set: Boolean(value) } : { value };
+  }
+  return output;
+}
+
+function normalizePayload(body, currentEnv) {
+  const values = body.values && typeof body.values === "object" ? body.values : {};
+  const clearSecrets = body.clearSecrets && typeof body.clearSecrets === "object" ? body.clearSecrets : {};
+  const updates = {};
+
+  for (const [key, rawValue] of Object.entries(values)) {
+    const field = fieldByKey.get(key);
+    if (!field) continue;
+
+    if (field.type === "secret") {
+      if (clearSecrets[key]) {
+        updates[key] = "";
+      } else if (String(rawValue || "").trim()) {
+        updates[key] = String(rawValue).trim();
+      } else if (currentEnv[key]) {
+        continue;
+      } else {
+        updates[key] = "";
+      }
+      continue;
+    }
+
+    updates[key] = normalizeValue(field, rawValue);
+  }
+
+  for (const key of deprecatedEnvKeys) updates[key] = null;
+
+  return updates;
+}
+
+function normalizeValue(field, rawValue) {
+  if (field.type === "boolean") return rawValue === true || rawValue === "true" || rawValue === "on" ? "true" : "false";
+
+  let value = String(rawValue ?? "").replace(/\r\n/g, "\n").trim();
+
+  if (field.type === "choice") {
+    if (!field.choices.includes(value)) {
+      throw new Error(`${field.key} must be one of: ${field.choices.join(", ")}`);
+    }
+    return value;
+  }
+
+  if (field.type === "number") {
+    if (!value) return "";
+    const number = Number(value);
+    if (!Number.isFinite(number)) throw new Error(`${field.key} must be a number.`);
+    if (field.min && number < field.min) throw new Error(`${field.key} must be at least ${field.min}.`);
+    if (field.max && number > field.max) throw new Error(`${field.key} must be at most ${field.max}.`);
+    return String(Math.round(number));
+  }
+
+  if (field.key === "ECHO_CODEX_WORKSPACES") {
+    return value
+      .split(/[,\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .join(",");
+  }
+
+  if (field.key === "ECHO_PROXY_URL") {
+    if (!value || value === "system") return value;
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol)) {
+      throw new Error("ECHO_PROXY_URL must be empty, system, or an HTTP/HTTPS proxy URL.");
+    }
+  }
+
+  return value;
+}
+
+async function writeEnvUpdates(updates) {
+  const content = await readEnvContent();
+  const lines = content ? content.split(/\r?\n/) : [];
+  const seen = new Set();
+  const nextLines = lines
+    .map((line) => {
+      const match = line.match(/^([A-Z0-9_]+)\s*=/);
+      if (!match) return line;
+
+      const key = match[1];
+      if (deprecatedEnvKeys.has(key)) {
+        seen.add(key);
+        return null;
+      }
+      if (!Object.prototype.hasOwnProperty.call(updates, key)) return line;
+
+      seen.add(key);
+      if (updates[key] === null) return null;
+      return formatEnvLine(key, updates[key]);
+    })
+    .filter((line) => line !== null);
+
+  const missing = Object.keys(updates).filter((key) => !seen.has(key) && updates[key] !== null);
+  if (missing.length) {
+    if (nextLines.length && nextLines[nextLines.length - 1] !== "") nextLines.push("");
+    nextLines.push("# Managed by Echo desktop settings");
+    for (const key of missing) nextLines.push(formatEnvLine(key, updates[key]));
+  }
+
+  await fs.writeFile(envFile, `${nextLines.join("\n").replace(/\n+$/g, "")}\n`, "utf8");
+}
+
+function formatEnvLine(key, value) {
+  const text = String(value ?? "");
+  if (!text) return `${key}=`;
+  if (/^[A-Za-z0-9_./:@,-]+$/.test(text)) return `${key}=${text}`;
+  return `${key}=${JSON.stringify(text)}`;
+}
+
+async function runNodeScript(args, timeoutMs) {
+  return runCommand(process.execPath, args, timeoutMs);
+}
+
+async function testLocalRefine(sample) {
+  const code = `
+    import { getRefineStatus, refineTranscript } from "./src/lib/refine.js";
+    const status = getRefineStatus();
+    const refined = await refineTranscript({
+      rawText: ${JSON.stringify(sample)},
+      mode: "chat",
+      contextHint: "桌面端模型配置页测试"
+    });
+    console.log(JSON.stringify({ scope: "local desktop", status, refined }, null, 2));
+  `;
+  return runNodeScript(["--input-type=module", "-e", code], 45000);
+}
+
+async function testRelayRefine(env, sample) {
+  if (!env.ECHO_TOKEN) {
+    return {
+      code: 1,
+      stdout: "",
+      stderr: "Missing ECHO_TOKEN for relay refine test."
+    };
+  }
+
+  try {
+    const statusResponse = await httpFetch(`${trimTrailingSlash(env.ECHO_RELAY_URL)}/api/agent/ping`, {
+      headers: {
+        "X-Echo-Token": env.ECHO_TOKEN
+      },
+      timeoutMs: 15000
+    });
+    const statusJson = await statusResponse.json().catch(() => ({}));
+    if (!statusResponse.ok) {
+      return {
+        code: statusResponse.status,
+        stdout: "",
+        stderr: `Relay status failed: ${statusResponse.status} ${statusJson.error || statusResponse.statusText}`
+      };
+    }
+
+    const refineResponse = await httpFetch(`${trimTrailingSlash(env.ECHO_RELAY_URL)}/api/agent/refine`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Echo-Token": env.ECHO_TOKEN
+      },
+      body: JSON.stringify({
+        rawText: sample,
+        mode: "chat",
+        contextHint: "桌面端配置页测试实际 relay 后处理"
+      }),
+      timeoutMs: 45000
+    });
+    const refineJson = await refineResponse.json().catch(() => ({}));
+    if (!refineResponse.ok) {
+      return {
+        code: refineResponse.status,
+        stdout: "",
+        stderr: `Relay refine failed: ${refineResponse.status} ${refineJson.error || refineResponse.statusText}`
+      };
+    }
+
+    return {
+      code: 0,
+      stdout: JSON.stringify(
+        {
+          scope: "relay server",
+          status: refineJson.status || statusJson.refine,
+          refined: refineJson.refined || ""
+        },
+        null,
+        2
+      ),
+      stderr: ""
+    };
+  } catch (error) {
+    return {
+      code: 1,
+      stdout: "",
+      stderr: error.message
+    };
+  }
+}
+
+async function runCommand(command, args, timeoutMs) {
+  const env = await readEnv();
+  return new Promise((resolve) => {
+    execFile(
+      command,
+      args,
+      {
+        cwd: rootDir,
+        env: { ...process.env, ...env },
+        timeout: timeoutMs,
+        maxBuffer: 1024 * 1024
+      },
+      (error, stdout, stderr) => {
+        resolve({
+          code: error?.code ?? 0,
+          stdout: redact(stdout || "", env),
+          stderr: redact(stderr || "", env)
+        });
+      }
+    );
+  });
+}
+
+async function buildHealth(env) {
+  const [agent, codex, claude, workspaces, relay] = await Promise.all([
+    checkAgentStatus(),
+    checkCodex(env),
+    checkClaude(env),
+    checkWorkspaces(env),
+    checkRelayCodexStatus(env)
+  ]);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    connection: {
+      ok: Boolean(env.ECHO_RELAY_URL && env.ECHO_TOKEN),
+      relayUrl: env.ECHO_RELAY_URL || "",
+      tokenSet: Boolean(env.ECHO_TOKEN),
+      proxy: env.ECHO_PROXY_URL || "direct"
+    },
+    agent,
+    codex,
+    claude,
+    workspaces,
+    relay
+  };
+}
+
+async function checkAgentStatus() {
+  if (process.platform !== "darwin") {
+    const appAgent = await findDesktopAgentProcess();
+    return appAgent || { ok: false, status: "unsupported", detail: "Agent status check is implemented for macOS and app-managed agents." };
+  }
+
+  const result = await runCommand("launchctl", ["print", `gui/${process.getuid()}/com.echo.voice.desktop-agent`], 5000);
+  const state = result.stdout.match(/state = ([^\n]+)/)?.[1]?.trim() || "";
+  const pid = result.stdout.match(/\bpid = (\d+)/)?.[1] || "";
+  const ok = result.code === 0 && state === "running";
+  if (ok) {
+    return {
+      ok: true,
+      status: "running",
+      detail: `LaunchAgent pid ${pid || "unknown"}`
+    };
+  }
+
+  const appAgent = await findDesktopAgentProcess();
+  if (appAgent) return appAgent;
+
+  return {
+    ok: false,
+    status: "not running",
+    detail: result.stderr || result.stdout || "No LaunchAgent or app-managed agent is running."
+  };
+}
+
+async function findDesktopAgentProcess() {
+  const result = await runCommand("ps", ["-axo", "pid=,ppid=,args="], 5000);
+  if (result.code !== 0) return null;
+  const normalizedRoot = rootDir.replaceAll("\\", "/");
+  const line = result.stdout
+    .split(/\r?\n/)
+    .find((item) => item.replaceAll("\\", "/").includes(`${normalizedRoot}/src/desktop-agent.js`));
+  if (!line) return null;
+  const pid = line.trim().match(/^(\d+)/)?.[1] || "unknown";
+  return {
+    ok: true,
+    status: "running",
+    detail: `app-managed pid ${pid}`
+  };
+}
+
+async function checkCodex(env) {
+  const commandInfo = resolveDesktopCodexCommand({
+    configuredCommand: env.ECHO_CODEX_COMMAND,
+    bundledPath: env.ECHO_CODEX_APP_PATH
+  });
+  if (!commandInfo.ok || !commandInfo.command) {
+    return {
+      ok: false,
+      status: "missing",
+      command: "",
+      path: "",
+      version: "",
+      detail: commandInfo.detail
+    };
+  }
+
+  const command = commandInfo.command;
+  const pathResult = await runCommand(
+    "zsh",
+    ["-lc", `command -v ${shellQuote(command)}`],
+    8000
+  );
+  const versionResult =
+    pathResult.code === 0
+      ? await runCommand("zsh", ["-lc", `${shellQuote(command)} --version`], 8000)
+      : { code: pathResult.code, stdout: "", stderr: pathResult.stderr || pathResult.stdout };
+  const binaryPath = pathResult.stdout.split(/\r?\n/).find(Boolean) || "";
+  const version = versionResult.stdout.split(/\r?\n/).find(Boolean) || "";
+  const ok = pathResult.code === 0 && versionResult.code === 0;
+  return {
+    ok,
+    status: ok ? "available" : "missing",
+    command,
+    path: binaryPath,
+    version,
+    detail:
+      ok
+        ? commandInfo.detail
+        : [commandInfo.detail, pathResult.stderr || versionResult.stderr || `${command} was not found in PATH.`]
+            .filter(Boolean)
+            .join(" ")
+  };
+}
+
+async function checkClaude(env) {
+  const enabled = env.ECHO_CLAUDE_ENABLED === "true";
+  const command = String(env.ECHO_CLAUDE_COMMAND || "claude").trim() || "claude";
+  if (!enabled) {
+    return {
+      ok: true,
+      status: "disabled",
+      command,
+      path: "",
+      version: "",
+      detail: "Claude Code backend is disabled."
+    };
+  }
+
+  const pathResult = await runCommand("zsh", ["-lc", `command -v ${shellQuote(command)}`], 8000);
+  const versionResult =
+    pathResult.code === 0
+      ? await runCommand("zsh", ["-lc", `${shellQuote(command)} --version`], 8000)
+      : { code: pathResult.code, stdout: "", stderr: pathResult.stderr || pathResult.stdout };
+  const binaryPath = pathResult.stdout.split(/\r?\n/).find(Boolean) || "";
+  const version = versionResult.stdout.split(/\r?\n/).find(Boolean) || "";
+  const ok = pathResult.code === 0 && versionResult.code === 0;
+  return {
+    ok,
+    status: ok ? "available" : "missing",
+    command,
+    path: binaryPath,
+    version,
+    detail: ok ? "Claude Code command is available." : pathResult.stderr || versionResult.stderr || `${command} was not found in PATH.`
+  };
+}
+
+async function checkWorkspaces(env) {
+  const items = mergeWorkspaceItems([
+    ...parseWorkspaceList(env.ECHO_CODEX_WORKSPACES || rootDir).map((item) => ({ ...item, source: "configured" })),
+    ...(await readManagedWorkspaceItems())
+  ]);
+  const results = await Promise.all(
+    items.map(async (item) => {
+      try {
+        const stat = await fs.stat(expandHome(item.path));
+        return {
+          ...item,
+          ok: stat.isDirectory(),
+          detail: stat.isDirectory() ? "directory exists" : "not a directory"
+        };
+      } catch (error) {
+        return {
+          ...item,
+          ok: false,
+          detail: error.message
+        };
+      }
+    })
+  );
+
+  return {
+    ok: results.length > 0 && results.every((item) => item.ok),
+    items: results
+  };
+}
+
+async function checkRelayCodexStatus(env) {
+  if (!env.ECHO_RELAY_URL || !env.ECHO_TOKEN) {
+    return {
+      ok: false,
+      status: "missing config",
+      detail: "Set ECHO_RELAY_URL and ECHO_TOKEN.",
+      codex: null
+    };
+  }
+
+  try {
+    const response = await httpFetch(`${trimTrailingSlash(env.ECHO_RELAY_URL)}/api/agent/ping`, {
+      headers: {
+        "X-Echo-Token": env.ECHO_TOKEN
+      },
+      timeoutMs: 15000
+    });
+    const json = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: `relay ${response.status}`,
+        detail: json.error || response.statusText || "Relay status request failed.",
+        codex: null
+      };
+    }
+
+    const codex = json.codex || null;
+    return {
+      ok: Boolean(codex),
+      status: codex?.agentOnline ? "agent online" : "waiting agent",
+      detail: codex?.agentOnline
+        ? `last seen ${codex.lastAgentSeenAt || "now"}`
+        : codex
+          ? "Relay is reachable, but no desktop agent is online."
+          : "Relay is reachable, but agent relay status is not available.",
+      mode: json.mode || "",
+      refine: json.refine || null,
+      codex
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: "unreachable",
+      detail: error.message,
+      codex: null
+    };
+  }
+}
+
+async function readManagedWorkspaceItems() {
+  const file = path.join(os.homedir(), ".echo-voice", "codex-workspaces.json");
+  try {
+    const content = await fs.readFile(file, "utf8");
+    const parsed = JSON.parse(content);
+    const workspaces = Array.isArray(parsed?.workspaces) ? parsed.workspaces : [];
+    return workspaces
+      .map((workspace) => {
+        const workspacePath = String(workspace?.path || "").trim();
+        const label = String(workspace?.label || workspace?.id || workspaceLabelFromPath(workspacePath)).trim();
+        if (!workspacePath || !label) return null;
+        return {
+          label,
+          path: path.resolve(expandHome(workspacePath)),
+          source: "mobile"
+        };
+      })
+      .filter(Boolean);
+  } catch (error) {
+    if (error.code !== "ENOENT") console.warn("Could not read managed workspaces:", error.message);
+    return [];
+  }
+}
+
+function mergeWorkspaceItems(items) {
+  const byKey = new Map();
+  for (const item of items) {
+    const workspacePath = String(item.path || "").trim();
+    const label = String(item.label || workspaceLabelFromPath(workspacePath)).trim();
+    if (!workspacePath || !label) continue;
+    const key = path.resolve(expandHome(workspacePath));
+    if (!byKey.has(key)) {
+      byKey.set(key, {
+        ...item,
+        label,
+        path: key
+      });
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+async function discoverWorkspaceSuggestions(env) {
+  const configured = parseWorkspaceList(env.ECHO_CODEX_WORKSPACES || "");
+  const configuredPaths = new Set(configured.map((item) => path.resolve(expandHome(item.path))));
+  const roots = workspaceSearchRoots(configured);
+  const found = new Map();
+
+  for (const root of roots) {
+    const directories = await nearbyProjectDirectories(root);
+    for (const directory of directories) {
+      const item = await workspaceSuggestion(directory, configuredPaths);
+      if (!item) continue;
+      found.set(item.path, item);
+      if (found.size >= 80) break;
+    }
+    if (found.size >= 80) break;
+  }
+
+  return Array.from(found.values()).sort((a, b) => {
+    if (a.alreadyConfigured !== b.alreadyConfigured) return a.alreadyConfigured ? 1 : -1;
+    return a.label.localeCompare(b.label);
+  });
+}
+
+function workspaceSearchRoots(configured) {
+  const home = os.homedir();
+  const roots = [
+    ...configured.map((item) => path.dirname(path.resolve(expandHome(item.path)))),
+    path.join(home, "workspace", "projects"),
+    path.join(home, "workspace"),
+    path.join(home, "Projects"),
+    path.join(home, "Code"),
+    path.join(home, "Developer"),
+    rootDir
+  ];
+  return Array.from(new Set(roots.map((item) => path.resolve(expandHome(item)))));
+}
+
+async function nearbyProjectDirectories(root) {
+  const output = [];
+  const rootStat = await safeStat(root);
+  if (!rootStat?.isDirectory()) return output;
+
+  output.push(root);
+  const entries = await safeReadDir(root);
+  const childDirs = entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .slice(0, 120)
+    .map((entry) => path.join(root, entry.name));
+  output.push(...childDirs);
+
+  if (["workspace", "code", "projects", "developer"].includes(path.basename(root).toLowerCase())) {
+    for (const child of childDirs.slice(0, 40)) {
+      const grandchildren = await safeReadDir(child);
+      output.push(
+        ...grandchildren
+          .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+          .slice(0, 40)
+          .map((entry) => path.join(child, entry.name))
+      );
+    }
+  }
+
+  return Array.from(new Set(output));
+}
+
+async function workspaceSuggestion(directory, configuredPaths) {
+  const stat = await safeStat(directory);
+  if (!stat?.isDirectory()) return null;
+  const signals = await projectSignals(directory);
+  const alreadyConfigured = configuredPaths.has(path.resolve(directory));
+  if (!alreadyConfigured && signals.length === 0) return null;
+
+  return {
+    label: workspaceLabelFromPath(directory),
+    path: path.resolve(directory),
+    signals,
+    alreadyConfigured
+  };
+}
+
+async function projectSignals(directory) {
+  const markers = [
+    [".git", "git"],
+    ["package.json", "node"],
+    ["pnpm-lock.yaml", "pnpm"],
+    ["pyproject.toml", "python"],
+    ["Cargo.toml", "rust"],
+    ["go.mod", "go"],
+    ["README.md", "readme"]
+  ];
+  const signals = [];
+  for (const [file, label] of markers) {
+    if (await pathExists(path.join(directory, file))) signals.push(label);
+  }
+  return signals;
+}
+
+async function listDirectories(inputPath) {
+  const home = os.homedir();
+  let current = path.resolve(expandHome(String(inputPath || home)));
+  const stat = await safeStat(current);
+  if (!stat) current = home;
+  else if (!stat.isDirectory()) current = path.dirname(current);
+
+  const entries = (await safeReadDir(current))
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, 180);
+
+  return {
+    current,
+    parent: path.dirname(current),
+    home,
+    entries: await Promise.all(
+      entries.map(async (entry) => {
+        const directory = path.join(current, entry.name);
+        return {
+          name: entry.name,
+          path: directory,
+          signals: await projectSignals(directory)
+        };
+      })
+    )
+  };
+}
+
+function parseWorkspaceList(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => {
+      const [label, rawPath] = item.includes("=") ? item.split("=", 2) : ["", item];
+      return {
+        label: label || path.basename(rawPath) || rawPath,
+        path: rawPath
+      };
+    });
+}
+
+function workspaceLabelFromPath(value) {
+  return path.basename(path.resolve(expandHome(value))) || "workspace";
+}
+
+function expandHome(value) {
+  if (value === "~") return process.env.HOME || value;
+  if (value.startsWith("~/")) return path.join(process.env.HOME || "", value.slice(2));
+  return value;
+}
+
+async function safeStat(value) {
+  try {
+    return await fs.stat(value);
+  } catch {
+    return null;
+  }
+}
+
+async function safeReadDir(value) {
+  try {
+    return await fs.readdir(value, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+async function pathExists(value) {
+  try {
+    await fs.access(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function systemOpenUrl(target) {
+  if (process.platform !== "darwin") return "";
+  if (target === "login-items") return "x-apple.systempreferences:com.apple.LoginItems-Settings.extension";
+  return "";
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+function openBrowser(url) {
+  if (process.platform !== "darwin") return;
+  execFile("open", [url], () => {});
+}
+
+function notifyDesktopShellUpdate() {
+  console.log("ECHO_DESKTOP_UPDATE_READY");
+  if (process.env.ELECTRON_RUN_AS_NODE === "1") {
+    setTimeout(() => process.exit(0), 500);
+  }
+}
+
+function trimTrailingSlash(value) {
+  return String(value || "").replace(/\/+$/, "");
+}
+
+function buildMobileUrl(env) {
+  if (!env.ECHO_RELAY_URL || !env.ECHO_TOKEN) return "";
+  const url = new URL(trimTrailingSlash(env.ECHO_RELAY_URL));
+  url.searchParams.set("token", env.ECHO_TOKEN);
+  return url.toString();
+}
+
+function redact(text, env = process.env) {
+  let output = String(text || "");
+  for (const key of secretKeys) {
+    const value = env[key] || process.env[key];
+    if (value) output = output.replaceAll(value, "<set>");
+  }
+  return output
+    .replace(/(ECHO_TOKEN[= ]+)[^\s]+/g, "$1<set>")
+    .replace(/((?:OPENAI|LLM|METIO|VOLCENGINE)[A-Z0-9_]*API_KEY[= ]+)[^\s]+/g, "$1<set>")
+    .trim();
+}
+
+function handleError(res, error) {
+  res.status(error.statusCode || 500).json({
+    error: error.message || "Unexpected error"
+  });
+}

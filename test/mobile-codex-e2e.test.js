@@ -1,0 +1,358 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import test, { after } from "node:test";
+
+const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-mobile-codex-e2e-"));
+const tempHome = path.join(tempRoot, "home");
+const workspacePath = path.join(tempRoot, "workspace");
+const fakeCodexPath = path.join(tempRoot, "fake-codex-app-server");
+const capturePath = path.join(tempRoot, "turn-start-capture.json");
+const threadCounterPath = path.join(tempRoot, "thread-counter.txt");
+const tinyPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4//8/AwAI/AL+KDvY8QAAAABJRU5ErkJggg==";
+let relayQueue = null;
+
+const relayServer = http.createServer((req, res) => {
+  const url = new URL(req.url || "/", "http://127.0.0.1");
+  if (req.headers["x-echo-token"] !== "mobile-e2e-token") {
+    res.writeHead(401, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "PAIRING_REQUIRED" }));
+    return;
+  }
+
+  const match = /^\/api\/agent\/codex\/attachments\/([^/]+)$/.exec(url.pathname);
+  if (!match) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "not found" }));
+    return;
+  }
+
+  const attachment = relayQueue?.getCodexSessionAttachmentContent(decodeURIComponent(match[1]));
+  if (!attachment || !fs.existsSync(attachment.filePath)) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Codex attachment not found." }));
+    return;
+  }
+
+  res.writeHead(200, {
+    "Cache-Control": "no-store, max-age=0",
+    "Content-Type": attachment.mimeType || "application/octet-stream",
+    "Content-Length": String(fs.statSync(attachment.filePath).size)
+  });
+  fs.createReadStream(attachment.filePath).pipe(res);
+});
+
+await new Promise((resolve) => relayServer.listen(0, "127.0.0.1", resolve));
+after(() => new Promise((resolve) => relayServer.close(resolve)));
+
+fs.mkdirSync(tempHome, { recursive: true });
+fs.mkdirSync(workspacePath, { recursive: true });
+fs.writeFileSync(path.join(workspacePath, "README.md"), "# workspace\n", "utf8");
+execGit(workspacePath, ["init"]);
+execGit(workspacePath, ["add", "README.md"]);
+execGit(workspacePath, ["-c", "user.name=Echo Test", "-c", "user.email=echo@example.test", "commit", "-m", "init"]);
+fs.writeFileSync(
+  fakeCodexPath,
+  `#!/usr/bin/env node
+import fs from "node:fs";
+import readline from "node:readline";
+
+const rl = readline.createInterface({ input: process.stdin });
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    send({ id: message.id, result: { userAgent: "fake", codexHome: "/tmp/codex", platformFamily: "unix", platformOs: "macos" } });
+    return;
+  }
+  if (message.method === "initialized") return;
+  if (message.method === "thread/start") {
+    const counterPath = ${JSON.stringify(threadCounterPath)};
+    const nextCounter = Number(fs.existsSync(counterPath) ? fs.readFileSync(counterPath, "utf8") : "0") + 1;
+    fs.writeFileSync(counterPath, String(nextCounter), "utf8");
+    const thread = { id: "thr_mobile_e2e_" + nextCounter, preview: "", ephemeral: false, modelProvider: "openai", createdAt: nextCounter, cwd: message.params.cwd };
+    send({ id: message.id, result: { thread } });
+    send({ method: "thread/started", params: { thread } });
+    return;
+  }
+  if (message.method === "thread/resume") {
+    send({ id: message.id, error: { code: -32004, message: "thread not found: " + message.params.threadId } });
+    return;
+  }
+  if (message.method === "turn/start") {
+    const text = message.params.input?.find((item) => item.type === "text")?.text || "";
+    const localImagePaths = (message.params.input || []).filter((item) => item.type === "localImage").map((item) => item.path);
+    const referencedImagePaths = Array.from(text.matchAll(/local file: (.+)/g)).map((match) => match[1].trim());
+    const userText = text.split("\\n[Echo image attachments]")[0].trim();
+    const imageCount = referencedImagePaths.length;
+    fs.writeFileSync(
+      ${JSON.stringify(capturePath)},
+      JSON.stringify({
+        input: message.params.input,
+        localImagePaths,
+        referencedImagePaths,
+        referencedImageSizes: referencedImagePaths.map((filePath) => fs.statSync(filePath).size)
+      }, null, 2),
+      "utf8"
+    );
+    const turn = { id: "turn_mobile_e2e", items: [], status: "inProgress", error: null, startedAt: 1, completedAt: null, durationMs: null };
+    send({ id: message.id, result: { turn } });
+    send({ method: "turn/started", params: { threadId: message.params.threadId, turn } });
+    send({ method: "item/agentMessage/delta", params: { threadId: message.params.threadId, turnId: turn.id, itemId: "msg_1", delta: "Fake interactive Codex finished: " } });
+    send({ method: "item/completed", params: { threadId: message.params.threadId, turnId: turn.id, item: { type: "agentMessage", id: "msg_1", text: "Fake interactive Codex finished: " + userText + " [images:" + imageCount + "]" } } });
+    send({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { ...turn, status: "completed", completedAt: 2 } } });
+    return;
+  }
+  if (message.method === "thread/compact/start") {
+    const turn = { id: "turn_compact", items: [], status: "inProgress", error: null, startedAt: 3, completedAt: null, durationMs: null };
+    send({ id: message.id, result: {} });
+    send({ method: "turn/started", params: { threadId: message.params.threadId, turn } });
+    send({ method: "item/completed", params: { threadId: message.params.threadId, turnId: turn.id, item: { type: "contextCompaction", id: "ctx_1" } } });
+    send({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { ...turn, status: "completed", completedAt: 4 } } });
+  }
+});
+`,
+  "utf8"
+);
+fs.chmodSync(fakeCodexPath, 0o755);
+
+process.env.HOME = tempHome;
+process.env.ECHO_MODE = "relay";
+process.env.ECHO_TOKEN = "mobile-e2e-token";
+process.env.ECHO_RELAY_URL = `http://127.0.0.1:${relayServer.address().port}`;
+process.env.ECHO_AUTH_ENABLED = "false";
+process.env.ECHO_CODEX_APP_PATH = fakeCodexPath;
+process.env.ECHO_CODEX_COMMAND = fakeCodexPath;
+process.env.ECHO_CODEX_WORKSPACES = `e2e=${workspacePath}`;
+process.env.ECHO_CODEX_TIMEOUT_MS = "5000";
+process.env.ECHO_CODEX_LEASE_MS = "60000";
+
+const store = await import("../src/lib/codexStore.js");
+relayQueue = await import("../src/lib/codexQueue.js");
+const queue = relayQueue;
+const runner = await import("../src/lib/codexRunner.js");
+const { CodexInteractiveRuntime } = await import("../src/lib/codexInteractiveRunner.js");
+
+test("mobile relay flow runs an interactive Codex session end to end", async () => {
+  store.resetStoreForTest();
+  resetFakeCodexArtifacts();
+
+  const agent = {
+    id: "agent-e2e",
+    workspaces: runner.publicWorkspaces(),
+    runtime: runner.publicCodexRuntime()
+  };
+  const runtime = new CodexInteractiveRuntime({
+    agentId: agent.id,
+    onEvents: (id, events) => {
+      const ok = queue.appendCodexSessionEvents(id, events, { agentId: agent.id });
+      assert.equal(ok, true);
+    }
+  });
+  try {
+    queue.updateCodexAgent(agent);
+
+    const mobileStatus = queue.codexStatus();
+    assert.equal(mobileStatus.agentOnline, true);
+    assert.equal(mobileStatus.workspaces.length, 1);
+    assert.equal(mobileStatus.workspaces[0].id, "e2e");
+    assert.equal(mobileStatus.workspaces[0].path, workspacePath);
+
+    const created = queue.createCodexSession({
+      projectId: "e2e",
+      prompt: "请修复移动端发送任务链路",
+      attachments: [{ type: "image", url: `data:image/png;base64,${tinyPngBase64}`, name: "mobile.png", mimeType: "image/png", sizeBytes: 70 }]
+    });
+    assert.equal(created.status, "queued");
+
+    const command = await queue.waitForCodexSessionCommand({ waitMs: 2000, agent });
+    assert.equal(command.sessionId, created.id);
+    assert.equal(command.type, "start");
+
+    const result = await runtime.handleCommand(command);
+    assert.equal(result.ok, true);
+    assert.equal(result.appThreadId, "thr_mobile_e2e_1");
+    assert.equal(queue.completeCodexSessionCommand(command.id, result, { agentId: agent.id }), true);
+
+    const completed = await waitForSessionState(() => {
+      const session = queue.getCodexSession(created.id);
+      return session?.events.some((event) => event.type === "turn/completed") ? session : null;
+    });
+    assert.equal(completed.status, "active");
+    assert.equal(completed.finalMessage, "Fake interactive Codex finished: 请修复移动端发送任务链路 [images:1]");
+    assert.equal(completed.events.some((event) => event.type === "thread.started"), true);
+    assert.equal(completed.events.some((event) => event.type === "turn/completed"), true);
+    assert.equal(completed.events.some((event) => event.type === "git.summary"), true);
+    assert.equal(completed.messages.length >= 1, true);
+    assert.equal(completed.messages[0].attachments.length, 1);
+    assert.equal(completed.messages[0].attachments[0].name, "mobile.png");
+    assert.equal(queue.listCodexSessions(5)[0].id, created.id);
+
+    const capture = JSON.parse(fs.readFileSync(capturePath, "utf8"));
+    assert.equal(capture.localImagePaths.length, 0);
+    assert.equal(capture.input.some((item) => item.type === "localImage"), false);
+    assert.equal(capture.referencedImagePaths.length, 1);
+    assert.equal(capture.referencedImageSizes[0] > 0, true);
+    assert.equal(capture.referencedImagePaths[0].startsWith(path.join(workspacePath, ".echo-codex-attachments")), true);
+    assert.equal(capture.referencedImagePaths[0].startsWith(path.join(tempHome, ".echo-voice", "codex-attachments")), false);
+
+    queue.compactCodexSession(created.id, { automatic: true, reason: "e2e-threshold" });
+    const compactCommand = await queue.waitForCodexSessionCommand({ waitMs: 2000, agent });
+    assert.equal(compactCommand.type, "compact");
+    assert.equal(compactCommand.appThreadId, "thr_mobile_e2e_1");
+    const compactResult = await runtime.handleCommand(compactCommand);
+    assert.equal(compactResult.ok, true);
+    assert.equal(queue.completeCodexSessionCommand(compactCommand.id, compactResult, { agentId: agent.id }), true);
+    const compacted = await waitForSessionState(() => {
+      const session = queue.getCodexSession(created.id);
+      return session?.events.some((event) => event.raw?.params?.item?.type === "contextCompaction") ? session : null;
+    });
+    assert.equal(compacted.status, "active");
+  } finally {
+    runtime.stop();
+  }
+});
+
+test("interactive Codex runtime flushes session events in notification order", async () => {
+  store.resetStoreForTest();
+  resetFakeCodexArtifacts();
+
+  const agent = {
+    id: "agent-event-order",
+    workspaces: runner.publicWorkspaces(),
+    runtime: runner.publicCodexRuntime()
+  };
+  const observedTypes = [];
+  const runtime = new CodexInteractiveRuntime({
+    agentId: agent.id,
+    onEvents: async (id, events) => {
+      if (events[0]?.type === "turn/started") await delay(40);
+      observedTypes.push(events[0]?.type || "");
+      const ok = queue.appendCodexSessionEvents(id, events, { agentId: agent.id });
+      assert.equal(ok, true);
+    }
+  });
+  try {
+    queue.updateCodexAgent(agent);
+
+    const created = queue.createCodexSession({
+      projectId: "e2e",
+      prompt: "验证流式事件顺序"
+    });
+    const command = await queue.waitForCodexSessionCommand({ waitMs: 2000, agent });
+    const result = await runtime.handleCommand(command);
+    assert.equal(result.ok, true);
+    assert.equal(queue.completeCodexSessionCommand(command.id, result, { agentId: agent.id }), true);
+
+    await waitForSessionState(() => {
+      const session = queue.getCodexSession(created.id);
+      return session?.events.some((event) => event.type === "turn/completed") ? session : null;
+    });
+
+    const turnStartedAt = observedTypes.indexOf("turn/started");
+    const deltaAt = observedTypes.indexOf("item/agentMessage/delta");
+    const completedAt = observedTypes.indexOf("item/completed");
+    assert.notEqual(turnStartedAt, -1);
+    assert.notEqual(deltaAt, -1);
+    assert.notEqual(completedAt, -1);
+    assert.equal(turnStartedAt < deltaAt, true);
+    assert.equal(deltaAt < completedAt, true);
+  } finally {
+    runtime.stop();
+  }
+});
+
+test("mobile relay flow recovers when an old Codex thread disappears", async () => {
+  store.resetStoreForTest();
+  resetFakeCodexArtifacts();
+
+  const agent = {
+    id: "agent-recover",
+    workspaces: runner.publicWorkspaces(),
+    runtime: runner.publicCodexRuntime()
+  };
+  const createRuntime = () =>
+    new CodexInteractiveRuntime({
+      agentId: agent.id,
+      onEvents: (id, events) => {
+        const ok = queue.appendCodexSessionEvents(id, events, { agentId: agent.id });
+        assert.equal(ok, true);
+      }
+    });
+  queue.updateCodexAgent(agent);
+
+  let runtime = createRuntime();
+  try {
+    const created = queue.createCodexSession({
+      projectId: "e2e",
+      prompt: "先理解这个移动端问题"
+    });
+    const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 2000, agent });
+    const startResult = await runtime.handleCommand(startCommand);
+    assert.equal(startResult.appThreadId, "thr_mobile_e2e_1");
+    assert.equal(queue.completeCodexSessionCommand(startCommand.id, startResult, { agentId: agent.id }), true);
+    await waitForSessionState(() => {
+      const session = queue.getCodexSession(created.id);
+      return session?.events.some((event) => event.type === "turn/completed") ? session : null;
+    });
+    runtime.stop();
+
+    runtime = createRuntime();
+    queue.enqueueCodexSessionMessage(created.id, { text: "继续修复移动端发送消息报错" });
+    const messageCommand = await queue.waitForCodexSessionCommand({ waitMs: 2000, agent });
+    assert.equal(messageCommand.type, "message");
+    assert.equal(messageCommand.appThreadId, "thr_mobile_e2e_1");
+    assert.equal(messageCommand.payload.history.some((message) => message.text.includes("先理解这个移动端问题")), true);
+
+    const messageResult = await runtime.handleCommand(messageCommand);
+    assert.equal(messageResult.ok, true);
+    assert.equal(messageResult.appThreadId, "thr_mobile_e2e_2");
+    assert.equal(queue.completeCodexSessionCommand(messageCommand.id, messageResult, { agentId: agent.id }), true);
+
+    const recovered = await waitForSessionState(() => {
+      const session = queue.getCodexSession(created.id);
+      return session?.events.some((event) => event.type === "thread.restarted") &&
+        session?.events.filter((event) => event.type === "turn/completed").length >= 2
+        ? session
+        : null;
+    });
+    assert.equal(recovered.status, "active");
+    assert.equal(recovered.appThreadId, "thr_mobile_e2e_2");
+    assert.equal(recovered.events.some((event) => event.type === "thread.restarted"), true);
+
+    const capture = JSON.parse(fs.readFileSync(capturePath, "utf8"));
+    const textInput = capture.input.find((item) => item.type === "text")?.text || "";
+    assert.match(textInput, /之前的本地 Codex thread 已失效/);
+    assert.match(textInput, /先理解这个移动端问题/);
+    assert.match(textInput, /继续修复移动端发送消息报错/);
+  } finally {
+    runtime.stop();
+  }
+});
+
+async function waitForSessionState(read, timeoutMs = 2000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const value = read();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for Codex session to reach expected state.");
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function resetFakeCodexArtifacts() {
+  fs.rmSync(capturePath, { force: true });
+  fs.rmSync(threadCounterPath, { force: true });
+}
+
+function execGit(cwd, args) {
+  execFileSync("git", args, { cwd, stdio: "ignore" });
+}

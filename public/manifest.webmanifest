@@ -1,0 +1,8 @@
+{
+  "name": "Echo",
+  "short_name": "Echo",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f4ee",
+  "theme_color": "#254e58"
+}
