@@ -227,7 +227,8 @@ export function sanitizeRuntimeForAgent(requestedRuntime = {}, agentRuntime = {}
   );
   const model = sanitizeModel(requested.model, { supportedModelIds, unsupportedModelIds, hasSupportedModelList: supportedModels.length > 0 });
   const reasoningEffort = sanitizeReasoningEffort(requested.reasoningEffort || requested.effort, model || selectedBackend.model, supportedModels);
-  const worktreeMode = sanitizeWorktreeMode(requested.worktreeMode, selectedBackend.worktreeMode);
+  const worktreeModeExplicit = hasExplicitWorktreeMode(requested);
+  const worktreeMode = sanitizeWorktreeMode(requested.worktreeMode, selectedBackend.worktreeMode, { requestedExplicit: worktreeModeExplicit });
   const backendName = String(
     selectedBackend.backendName ||
       selectedBackend.name ||
@@ -249,6 +250,7 @@ export function sanitizeRuntimeForAgent(requestedRuntime = {}, agentRuntime = {}
     profile: permissionMode,
     permissionMode,
     worktreeMode,
+    worktreeModeExplicit,
     timeoutMs: Number(requested.timeoutMs || 0) || null
   };
 }
@@ -314,13 +316,20 @@ function normalizeWorktreeMode(value) {
   return ["off", "optional", "always"].includes(mode) ? mode : "off";
 }
 
-function sanitizeWorktreeMode(requestedMode, agentMode) {
+function sanitizeWorktreeMode(requestedMode, agentMode, { requestedExplicit = false } = {}) {
   const desktopMode = normalizeWorktreeMode(agentMode);
   if (desktopMode === "always") return "always";
   if (desktopMode === "optional") {
-    return String(requestedMode || "").trim().toLowerCase() === "off" ? "off" : "always";
+    return requestedExplicit && String(requestedMode || "").trim().toLowerCase() === "off" ? "off" : "always";
   }
   return "off";
+}
+
+function hasExplicitWorktreeMode(runtime = {}) {
+  if (!runtime || typeof runtime !== "object") return false;
+  if (runtime.worktreeModeExplicit === false) return false;
+  if (runtime.worktreeModeExplicit === true) return true;
+  return Object.prototype.hasOwnProperty.call(runtime, "worktreeMode");
 }
 
 function dedupeRuntimeBackends(backends = []) {
