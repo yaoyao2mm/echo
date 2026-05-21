@@ -814,6 +814,7 @@ pnpm run doctor:network
 
 ### Documentation
 
+- [Internet deployment](docs/internet-deploy.md)
 - [Quick skills](docs/quick-skills.md)
 - [Mobile Codex remote plan](docs/mobile-codex-remote-plan.md)
 - [Mobile Codex roadmap](docs/mobile-codex-roadmap.md)

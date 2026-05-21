@@ -60,9 +60,24 @@ test("sanitizeRuntimeForAgent honors optional desktop worktree policy", () => {
     sanitizeRuntimeForAgent({ worktreeMode: "always" }, { worktreeMode: "optional", sandbox: "workspace-write" }).worktreeMode,
     "always"
   );
+  assert.equal(
+    sanitizeRuntimeForAgent({ worktreeMode: "always", worktreeModeExplicit: true }, { worktreeMode: "optional", sandbox: "workspace-write" })
+      .worktreeModeExplicit,
+    true
+  );
   assert.equal(sanitizeRuntimeForAgent({}, { worktreeMode: "optional", sandbox: "workspace-write" }).worktreeMode, "always");
+  assert.equal(sanitizeRuntimeForAgent({}, { worktreeMode: "optional", sandbox: "workspace-write" }).worktreeModeExplicit, false);
   assert.equal(
     sanitizeRuntimeForAgent({ worktreeMode: "off" }, { worktreeMode: "optional", sandbox: "workspace-write" }).worktreeMode,
+    "always"
+  );
+  assert.equal(
+    sanitizeRuntimeForAgent({ worktreeMode: "off", worktreeModeExplicit: false }, { worktreeMode: "optional", sandbox: "workspace-write" })
+      .worktreeMode,
+    "always"
+  );
+  assert.equal(
+    sanitizeRuntimeForAgent({ worktreeMode: "off", worktreeModeExplicit: true }, { worktreeMode: "optional", sandbox: "workspace-write" }).worktreeMode,
     "off"
   );
   assert.equal(
