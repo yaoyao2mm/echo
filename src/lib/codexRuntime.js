@@ -327,9 +327,7 @@ function sanitizeWorktreeMode(requestedMode, agentMode, { requestedExplicit = fa
 
 function hasExplicitWorktreeMode(runtime = {}) {
   if (!runtime || typeof runtime !== "object") return false;
-  if (runtime.worktreeModeExplicit === false) return false;
-  if (runtime.worktreeModeExplicit === true) return true;
-  return Object.prototype.hasOwnProperty.call(runtime, "worktreeMode");
+  return runtime.worktreeModeExplicit === true;
 }
 
 function dedupeRuntimeBackends(backends = []) {

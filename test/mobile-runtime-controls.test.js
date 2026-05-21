@@ -230,6 +230,24 @@ test("mobile runtime controls keep permissions phone-owned when desktop allowed 
   assert.equal(app.currentBackendRunsPlanOnly(), false);
 });
 
+test("mobile runtime draft marks worktree choice as explicit", () => {
+  const app = createRuntimeControlApp();
+  installCore(app);
+  app.state.codexAgentRuntime = { backendId: "codex", provider: "codex", backendName: "Codex", worktreeMode: "optional" };
+  app.state.codexBackendRuntimes = [app.state.codexAgentRuntime];
+  app.state.worktreePreferenceEnabled = false;
+
+  app.initRuntimeControls();
+  const disabledDraft = app.currentRuntimeDraft();
+  assert.equal(disabledDraft.worktreeMode, "off");
+  assert.equal(disabledDraft.worktreeModeExplicit, true);
+
+  app.applyWorktreeModePreference(true, { persist: false });
+  const enabledDraft = app.currentRuntimeDraft();
+  assert.equal(enabledDraft.worktreeMode, "always");
+  assert.equal(enabledDraft.worktreeModeExplicit, true);
+});
+
 function createRuntimeControlApp() {
   const storage = new Map();
   const elements = {

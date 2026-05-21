@@ -878,7 +878,8 @@ export function installCore(app) {
       backendId: next.backendId,
       profile: next.permissionMode || "",
       sandbox: next.permissionMode ? preset.sandbox : "",
-      approvalPolicy: next.permissionMode ? preset.approvalPolicy : ""
+      approvalPolicy: next.permissionMode ? preset.approvalPolicy : "",
+      worktreeModeExplicit: true
     };
   };
 
@@ -1138,7 +1139,9 @@ export function installCore(app) {
       approvalPolicy: app.normalizeApprovalPolicyValue(runtime.approvalPolicy),
       model: knownModelValues.has(rawModel) || rawModel ? rawModel : "",
       reasoningEffort: knownReasoningValues.has(reasoningEffort) || reasoningEffort ? reasoningEffort : "",
-      worktreeMode: app.normalizeWorktreeModeValue(runtime.worktreeMode)
+      worktreeMode: app.normalizeWorktreeModeValue(runtime.worktreeMode),
+      worktreeModeExplicit:
+        runtime.worktreeModeExplicit === true || (runtime.worktreeModeExplicit !== false && Object.prototype.hasOwnProperty.call(runtime, "worktreeMode"))
     };
   };
 

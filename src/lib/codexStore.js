@@ -5312,9 +5312,7 @@ function normalizeWorkspaces(workspaces = []) {
 
 function normalizeRuntime(runtime = {}) {
   const source = runtime && typeof runtime === "object" ? runtime : {};
-  const worktreeModeExplicit =
-    source.worktreeModeExplicit === true ||
-    (source.worktreeModeExplicit !== false && Object.prototype.hasOwnProperty.call(source, "worktreeMode"));
+  const worktreeModeExplicit = source.worktreeModeExplicit === true;
   const unsupportedModels = Array.isArray(runtime.unsupportedModels)
     ? runtime.unsupportedModels.map((model) => String(model || "").trim()).filter(Boolean)
     : [];

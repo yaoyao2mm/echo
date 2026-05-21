@@ -59,6 +59,13 @@ cd "$ECHO_DEPLOY_PATH"
 echo "== before =="
 git rev-parse --short HEAD
 
+dirty_tracked="$(git status --porcelain --untracked-files=no)"
+if [[ -n "$dirty_tracked" ]]; then
+  echo "Refusing to deploy because tracked local files have uncommitted changes:" >&2
+  echo "$dirty_tracked" >&2
+  exit 1
+fi
+
 echo "== pull =="
 git fetch "$ECHO_DEPLOY_REMOTE" "$ECHO_DEPLOY_BRANCH"
 git merge --ff-only "$ECHO_DEPLOY_REMOTE/$ECHO_DEPLOY_BRANCH"
