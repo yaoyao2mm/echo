@@ -14,6 +14,7 @@ export function installFiles(app) {
   app.openFileBrowser = async function openFileBrowser() {
     if (!elements.fileBrowserPanel) return;
     if (elements.codexView?.classList.contains("sessions-open")) app.closeSessionSidebar?.({ restoreFocus: false });
+    if (elements.codexView?.classList.contains("open-spec-open")) app.closeOpenSpecPanel?.({ restoreFocus: false });
     app.closeProjectSwitcher?.();
     app.closeQuickSkillsPanel?.();
     app.setTopbarCollapsed(false);

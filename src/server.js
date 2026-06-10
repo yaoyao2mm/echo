@@ -395,6 +395,28 @@ app.post("/api/codex/files/read", async (req, res) => {
   }
 });
 
+app.post("/api/codex/open-spec/summary", async (req, res) => {
+  try {
+    if (config.mode !== "relay") {
+      return res.status(400).json({ error: "Open Spec summaries are only available in relay mode." });
+    }
+
+    const request = createCodexFileRequest({
+      type: "open-spec-summary",
+      projectId: req.body.projectId,
+      maxChanges: req.body.maxChanges,
+      maxSpecs: req.body.maxSpecs,
+      requestedBy: req.user?.username || req.user?.displayName || "mobile"
+    });
+    const completed = await waitForCodexFileRequestResult(request.id, {
+      waitMs: Number(req.query.wait || req.body.wait || 30000)
+    });
+    sendFileRequestResult(res, completed || request, "openSpec", { label: "Open Spec summary" });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
 app.get("/api/codex/sessions", (req, res) => {
   if (config.mode !== "relay") {
     return res.status(400).json({ error: "Interactive sessions are only available in relay mode." });
@@ -903,18 +925,19 @@ server.listen(config.port, config.host, () => {
   console.log("\nKeep this terminal running while using the phone UI.\n");
 });
 
-function sendFileRequestResult(res, request, resultKey) {
+function sendFileRequestResult(res, request, resultKey, options = {}) {
+  const label = String(options.label || "File browser request").trim();
   if (!request) {
-    return res.status(504).json({ error: "File browser request timed out." });
+    return res.status(504).json({ error: `${label} timed out.` });
   }
   if (request.status === "queued" || request.status === "leased") {
-    return res.status(504).json({ error: "File browser request timed out.", request });
+    return res.status(504).json({ error: `${label} timed out.`, request });
   }
   if (request.status === "expired") {
-    return res.status(504).json({ error: request.error || "File browser request expired.", request });
+    return res.status(504).json({ error: request.error || `${label} expired.`, request });
   }
   if (request.status === "failed" || request.result?.ok === false) {
-    return res.status(422).json({ error: request.error || request.result?.error || "File browser request failed.", request });
+    return res.status(422).json({ error: request.error || request.result?.error || `${label} failed.`, request });
   }
 
   res.setHeader("Cache-Control", "no-store, max-age=0");

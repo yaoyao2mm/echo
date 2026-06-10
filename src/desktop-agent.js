@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { loadDesktopAgentId } from "./lib/agentIdentity.js";
 import { listWorkspaceFiles, readWorkspaceFile } from "./lib/codexFileBrowser.js";
 import { publicWorkspaces } from "./lib/codexRunner.js";
+import { summarizeOpenSpecWorkspace } from "./lib/openSpecSummary.js";
 import {
   applyCodexSessionWorktree,
   discardCodexSessionWorktree,
@@ -426,6 +427,16 @@ async function handleCodexFileRequest(request) {
         relativePath: payload.path ?? request.path,
         maxBytes: payload.maxBytes,
         workspaces: publicWorkspaces()
+      });
+    }
+    if (request.type === "open-spec-summary") {
+      return await summarizeOpenSpecWorkspace({
+        projectId: request.projectId,
+        workspaces: publicWorkspaces(),
+        limits: {
+          maxChanges: payload.maxChanges,
+          maxSpecs: payload.maxSpecs
+        }
       });
     }
     return { ok: false, error: `Unsupported file browser request: ${request.type}` };

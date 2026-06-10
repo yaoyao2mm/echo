@@ -116,6 +116,13 @@ export function createAppContext(windowRef = window, documentRef = document) {
       turnActivityDetailsOpen: false,
       contextUsageDetailsOpen: false,
       autoCompactedSessionIds: new Set(),
+      openSpecProjectId: "",
+      openSpecSummary: null,
+      openSpecSummariesByProject: {},
+      openSpecBusy: false,
+      openSpecError: "",
+      openSpecStale: false,
+      openSpecRequestSeq: 0,
       fileBrowserProjectId: "",
       fileBrowserPath: "",
       fileBrowserTree: null,
@@ -287,7 +294,8 @@ export function installCore(app) {
       options.forceVisible ||
       currentY <= 8 ||
       elements.codexView.classList.contains("sessions-open") ||
-      elements.codexView.classList.contains("files-open")
+      elements.codexView.classList.contains("files-open") ||
+      elements.codexView.classList.contains("open-spec-open")
     ) {
       state.topbarScrollAccumulator = 0;
       app.setTopbarCollapsed(false);
@@ -1892,6 +1900,17 @@ function queryElements(documentRef) {
     quickSkillDeleteButton: documentRef.querySelector("#quickSkillDeleteButton"),
     quickSkillCancelButton: documentRef.querySelector("#quickSkillCancelButton"),
     quickSkillSaveButton: documentRef.querySelector("#quickSkillSaveButton"),
+    openSpec: documentRef.querySelector("#openSpec"),
+    openSpecButton: documentRef.querySelector("#openSpecButton"),
+    openSpecPanel: documentRef.querySelector("#openSpecPanel"),
+    openSpecTitle: documentRef.querySelector("#openSpecTitle"),
+    openSpecMeta: documentRef.querySelector("#openSpecMeta"),
+    openSpecExploreButton: documentRef.querySelector("#openSpecExploreButton"),
+    openSpecRefreshButton: documentRef.querySelector("#openSpecRefreshButton"),
+    openSpecCloseButton: documentRef.querySelector("#openSpecCloseButton"),
+    openSpecStatus: documentRef.querySelector("#openSpecStatus"),
+    openSpecOverview: documentRef.querySelector("#openSpecOverview"),
+    openSpecTimeline: documentRef.querySelector("#openSpecTimeline"),
     fileBrowser: documentRef.querySelector("#fileBrowser"),
     fileBrowserButton: documentRef.querySelector("#fileBrowserButton"),
     fileBrowserPanel: documentRef.querySelector("#fileBrowserPanel"),

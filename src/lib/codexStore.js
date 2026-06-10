@@ -1210,7 +1210,7 @@ export function createFileRequest(input = {}) {
 
   const type = normalizeFileRequestType(input.type);
   const projectId = normalizeFileRequestProjectId(input.projectId);
-  const requestPath = normalizeFileRequestPath(input.path);
+  const requestPath = type === "open-spec-summary" ? "" : normalizeFileRequestPath(input.path);
   const workspace = onlineWorkspaceForProject(projectId);
   if (!workspace) return conflict("Desktop agent is not online for this workspace.");
 
@@ -2193,7 +2193,7 @@ function migrate() {
 
     CREATE TABLE IF NOT EXISTS codex_file_requests (
       id TEXT PRIMARY KEY,
-      type TEXT NOT NULL CHECK (type IN ('list', 'read')),
+      type TEXT NOT NULL CHECK (type IN ('list', 'read', 'open-spec-summary')),
       project_id TEXT NOT NULL,
       path TEXT NOT NULL DEFAULT '',
       payload_json TEXT NOT NULL DEFAULT '{}',
@@ -2352,6 +2352,7 @@ function migrate() {
   ensureSessionStatuses();
   repairSessionForeignKeyReferences();
   ensureSessionCommandTypes();
+  ensureFileRequestTypes();
   repairSessionForeignKeyReferences();
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_codex_sessions_status_updated
@@ -2725,6 +2726,77 @@ function ensureSessionCommandTypes() {
   db.pragma("foreign_keys = ON");
 }
 
+function ensureFileRequestTypes() {
+  const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'codex_file_requests'").get()?.sql || "";
+  if (schema.includes("'open-spec-summary'")) return;
+
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+    PRAGMA legacy_alter_table = ON;
+    BEGIN TRANSACTION;
+    ALTER TABLE codex_file_requests RENAME TO codex_file_requests_old;
+    CREATE TABLE codex_file_requests (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL CHECK (type IN ('list', 'read', 'open-spec-summary')),
+      project_id TEXT NOT NULL,
+      path TEXT NOT NULL DEFAULT '',
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL CHECK (status IN ('queued', 'leased', 'done', 'failed', 'expired')),
+      result_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      leased_by TEXT,
+      lease_expires_at TEXT,
+      error TEXT NOT NULL DEFAULT '',
+      requested_by TEXT NOT NULL DEFAULT ''
+    );
+    INSERT INTO codex_file_requests (
+      id,
+      type,
+      project_id,
+      path,
+      payload_json,
+      status,
+      result_json,
+      created_at,
+      updated_at,
+      expires_at,
+      leased_by,
+      lease_expires_at,
+      error,
+      requested_by
+    )
+    SELECT
+      id,
+      type,
+      project_id,
+      path,
+      payload_json,
+      status,
+      result_json,
+      created_at,
+      updated_at,
+      expires_at,
+      leased_by,
+      lease_expires_at,
+      error,
+      requested_by
+    FROM codex_file_requests_old;
+    DROP TABLE codex_file_requests_old;
+    COMMIT;
+    PRAGMA legacy_alter_table = OFF;
+    PRAGMA foreign_keys = ON;
+
+    CREATE INDEX IF NOT EXISTS idx_codex_file_requests_status_created
+      ON codex_file_requests(status, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_codex_file_requests_expires
+      ON codex_file_requests(expires_at);
+
+  `);
+  db.pragma("foreign_keys = ON");
+}
 function reclaimExpiredLeases() {
   const now = nowIso();
   const expired = db.prepare(`
@@ -5249,7 +5321,7 @@ function normalizeWorkspaceName(value) {
 
 function normalizeFileRequestType(value) {
   const type = String(value || "").trim().toLowerCase();
-  if (type === "list" || type === "read") return type;
+  if (type === "list" || type === "read" || type === "open-spec-summary") return type;
   return badRequest("Unsupported file browser request type.");
 }
 
@@ -5277,6 +5349,14 @@ function normalizeFileRequestPath(value) {
 }
 
 function normalizeFileRequestPayload(type, input = {}) {
+  if (type === "open-spec-summary") {
+    return {
+      path: "",
+      maxChanges: clampInteger(input.maxChanges, 1, 200, 80),
+      maxSpecs: clampInteger(input.maxSpecs, 1, 240, 120)
+    };
+  }
+
   const payload = { path: normalizeFileRequestPath(input.path) };
   if (type === "list") {
     payload.maxEntries = clampInteger(input.maxEntries, 1, 500, 240);

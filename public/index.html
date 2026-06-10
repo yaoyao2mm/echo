@@ -15,8 +15,8 @@
         if (localStorage.getItem("echoTheme") === "dark") document.documentElement.dataset.theme = "dark";
       } catch {}
     </script>
-    <link rel="manifest" href="/manifest.webmanifest?v=111" />
-    <link rel="stylesheet" href="/styles.css?v=111" />
+    <link rel="manifest" href="/manifest.webmanifest?v=129" />
+    <link rel="stylesheet" href="/styles.css?v=129" />
   </head>
   <body>
     <main class="shell">
@@ -120,6 +120,36 @@
             </form>
           </section>
         </div>
+        <div id="openSpec" class="topbar-open-spec" data-authenticated hidden>
+          <button
+            id="openSpecButton"
+            class="topbar-quick-deploy open-spec-trigger"
+            type="button"
+            aria-label="Open Spec"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            aria-controls="openSpecPanel"
+            title="Open Spec"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M5.2 5.6c0-.9.7-1.6 1.6-1.6h7.1l4.9 4.9v9.5c0 .9-.7 1.6-1.6 1.6H6.8c-.9 0-1.6-.7-1.6-1.6V5.6Z"
+                fill="none"
+                stroke="currentColor"
+                stroke-linejoin="round"
+                stroke-width="1.8"
+              />
+              <path
+                d="M13.8 4.2v4.2c0 .5.4.9.9.9h4M8.4 13.4h7.2M8.4 16.5h4.8M8.4 10.3h2.8"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.8"
+              />
+            </svg>
+          </button>
+        </div>
         <div id="fileBrowser" class="topbar-file-browser" data-authenticated hidden>
           <button
             id="fileBrowserButton"
@@ -182,6 +212,72 @@
 
       <section id="codexView" class="codex-section" data-authenticated hidden>
         <button id="sessionBackdrop" class="session-backdrop" type="button" aria-label="关闭会话列表" hidden></button>
+        <section id="openSpecPanel" class="open-spec-panel" role="dialog" aria-label="Open Spec" hidden>
+          <div class="open-spec-head">
+            <div>
+              <strong id="openSpecTitle">Open Spec</strong>
+              <span id="openSpecMeta">当前工程</span>
+            </div>
+            <div class="open-spec-head-actions">
+              <button
+                id="openSpecExploreButton"
+                class="icon-button open-spec-explore"
+                type="button"
+                aria-label="Explore Open Spec change"
+                title="Explore Open Spec change"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M11 4.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM16 16l4 4M9.2 9.3h2.7l-1.5 2.1h2.6"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.8"
+                  />
+                </svg>
+              </button>
+              <button
+                id="openSpecRefreshButton"
+                class="icon-button open-spec-refresh"
+                type="button"
+                aria-label="刷新 Open Spec"
+                title="刷新 Open Spec"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M20 6v5h-5M4 18v-5h5M18.1 9a6.5 6.5 0 0 0-11-2.5L4 9.5M5.9 15a6.5 6.5 0 0 0 11 2.5L20 14.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.8"
+                  />
+                </svg>
+              </button>
+              <button
+                id="openSpecCloseButton"
+                class="icon-button open-spec-close"
+                type="button"
+                aria-label="关闭 Open Spec"
+                title="关闭 Open Spec"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M6 6l12 12M18 6 6 18"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-width="2"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div id="openSpecStatus" class="open-spec-status" role="status"></div>
+          <div id="openSpecOverview" class="open-spec-overview"></div>
+          <div id="openSpecTimeline" class="open-spec-timeline"></div>
+        </section>
         <section id="fileBrowserPanel" class="file-browser-panel" role="dialog" aria-label="代码浏览" hidden>
           <div class="file-browser-head">
             <div>
@@ -529,6 +625,6 @@
       </section>
     </main>
 
-    <script src="/app.js?v=111" type="module"></script>
+    <script src="/app.js?v=129" type="module"></script>
   </body>
 </html>

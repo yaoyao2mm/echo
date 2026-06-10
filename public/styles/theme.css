@@ -144,7 +144,8 @@
   box-shadow: 0 24px 54px rgba(0, 0, 0, 0.34);
 }
 
-:root[data-theme="dark"] .file-browser-panel {
+:root[data-theme="dark"] .file-browser-panel,
+:root[data-theme="dark"] .open-spec-panel {
   border-color: rgba(139, 154, 174, 0.18);
   background: rgba(17, 21, 27, 0.98);
   box-shadow: 0 24px 54px rgba(0, 0, 0, 0.34);
@@ -191,12 +192,75 @@
 :root[data-theme="dark"] .file-browser-list,
 :root[data-theme="dark"] .file-entry,
 :root[data-theme="dark"] .file-preview,
-:root[data-theme="dark"] .file-browser-empty {
+:root[data-theme="dark"] .file-browser-empty,
+:root[data-theme="dark"] .open-spec-overview,
+:root[data-theme="dark"] .open-spec-metric,
+:root[data-theme="dark"] .open-spec-change,
+:root[data-theme="dark"] .open-spec-task-list,
+:root[data-theme="dark"] .open-spec-task {
   border-color: rgba(139, 154, 174, 0.12);
 }
 
+:root[data-theme="dark"] .open-spec-timeline::before {
+  background: rgba(139, 154, 174, 0.16);
+}
+
+:root[data-theme="dark"] .open-spec-change-copy-button,
+:root[data-theme="dark"] .open-spec-change-menu-button,
+:root[data-theme="dark"] .open-spec-check {
+  border-color: rgba(139, 154, 174, 0.16);
+  background: rgba(23, 28, 36, 0.72);
+}
+
+:root[data-theme="dark"] .open-spec-change {
+  --open-spec-change-fill: rgba(99, 148, 138, 0.2);
+}
+
+:root[data-theme="dark"] .open-spec-change-complete {
+  --open-spec-change-fill: rgba(88, 158, 115, 0.22);
+}
+
+:root[data-theme="dark"] .open-spec-change-archived {
+  --open-spec-change-fill: rgba(139, 154, 174, 0.18);
+}
+
+:root[data-theme="dark"] .open-spec-change {
+  background:
+    linear-gradient(
+      90deg,
+      var(--open-spec-change-fill) 0%,
+      var(--open-spec-change-fill) var(--open-spec-change-progress),
+      rgba(17, 21, 27, 0) calc(var(--open-spec-change-progress) + 18%)
+    );
+}
+
+:root[data-theme="dark"] .open-spec-change-copy-button:hover,
+:root[data-theme="dark"] .open-spec-change-copy-button:focus-visible,
+:root[data-theme="dark"] .open-spec-change-menu-button:hover,
+:root[data-theme="dark"] .open-spec-change-menu-button:focus-visible {
+  background: rgba(139, 154, 174, 0.12);
+}
+
+:root[data-theme="dark"] .open-spec-change-menu-popover {
+  border-color: rgba(139, 154, 174, 0.16);
+  background: rgba(23, 28, 36, 0.98);
+  box-shadow: 0 16px 30px rgba(0, 0, 0, 0.28);
+}
+
+:root[data-theme="dark"] .open-spec-change-menu-popover button:hover,
+:root[data-theme="dark"] .open-spec-change-menu-popover button:focus-visible {
+  background: rgba(99, 148, 138, 0.18);
+}
+
+:root[data-theme="dark"] .open-spec-tags span {
+  border-color: rgba(139, 154, 174, 0.16);
+  background: rgba(139, 154, 174, 0.1);
+  color: #aeb9c7;
+}
+
 @media (max-width: 760px) {
-  :root[data-theme="dark"] body.mobile-ui .file-browser-panel {
+  :root[data-theme="dark"] body.mobile-ui .file-browser-panel,
+  :root[data-theme="dark"] body.mobile-ui .open-spec-panel {
     border: 0;
     background: transparent;
     box-shadow: none;
@@ -214,8 +278,15 @@
     box-shadow: -9px 0 20px rgba(0, 0, 0, 0.22);
   }
 
+  :root[data-theme="dark"] body.mobile-ui .open-spec-panel {
+    border-left-color: rgba(139, 154, 174, 0.13);
+    background: rgba(17, 21, 27, 0.985);
+    box-shadow: -9px 0 20px rgba(0, 0, 0, 0.22);
+  }
+
   :root[data-theme="dark"] body.mobile-ui .codex-section.sessions-open .codex-main,
-  :root[data-theme="dark"] body.mobile-ui .codex-section.files-open .codex-main {
+  :root[data-theme="dark"] body.mobile-ui .codex-section.files-open .codex-main,
+  :root[data-theme="dark"] body.mobile-ui .codex-section.open-spec-open .codex-main {
     background: rgb(13, 16, 20);
   }
 }

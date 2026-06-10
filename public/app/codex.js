@@ -286,6 +286,7 @@ export function installCodex(app) {
 
   app.openSessionSidebar = function openSessionSidebar() {
     app.closeFileBrowser?.({ restoreFocus: false });
+    app.closeOpenSpecPanel?.({ restoreFocus: false });
     elements.codexView.classList.add("sessions-open");
     app.setTopbarCollapsed(false);
     elements.sessionBackdrop.hidden = false;
@@ -353,7 +354,9 @@ export function installCodex(app) {
   app.syncBodySheetState = function syncBodySheetState() {
     document.body.classList.toggle(
       "sheet-open",
-      elements.codexView.classList.contains("sessions-open") || elements.codexView.classList.contains("files-open")
+      elements.codexView.classList.contains("sessions-open") ||
+        elements.codexView.classList.contains("files-open") ||
+        elements.codexView.classList.contains("open-spec-open")
     );
   };
 

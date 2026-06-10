@@ -2532,6 +2532,23 @@ test("file browser requests are short-lived and scoped to advertised workspaces"
   const completed = await queue.waitForCodexFileRequestResult(created.id, { waitMs: 1000 });
   assert.equal(completed.status, "done");
   assert.equal(completed.result.tree.path, "src");
+
+  const openSpecRequest = queue.createCodexFileRequest({
+    type: "open-spec-summary",
+    projectId: "demo",
+    path: "../outside",
+    maxChanges: 999,
+    maxSpecs: 999
+  });
+  assert.equal(openSpecRequest.path, "");
+  assert.equal(openSpecRequest.payload.path, "");
+  assert.equal(openSpecRequest.payload.maxChanges, 200);
+  assert.equal(openSpecRequest.payload.maxSpecs, 240);
+
+  const leasedOpenSpecRequest = await queue.waitForCodexFileRequest({ waitMs: 1000, agent });
+  assert.equal(leasedOpenSpecRequest.id, openSpecRequest.id);
+  assert.equal(leasedOpenSpecRequest.type, "open-spec-summary");
+  assert.equal(leasedOpenSpecRequest.path, "");
 });
 
 test("interactive Codex sessions can be archived and restored", async () => {

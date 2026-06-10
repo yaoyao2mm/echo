@@ -1,8 +1,9 @@
-import { installAuth } from "./auth.js?v=111";
-import { installCodex } from "./codex.js?v=111";
-import { createAppContext, installCore } from "./core.js?v=111";
-import { installFiles } from "./files.js?v=111";
-import { installSessions } from "./sessions.js?v=111";
+import { installAuth } from "./auth.js?v=129";
+import { installCodex } from "./codex.js?v=129";
+import { createAppContext, installCore } from "./core.js?v=129";
+import { installFiles } from "./files.js?v=129";
+import { installOpenSpec } from "./open-spec.js?v=129";
+import { installSessions } from "./sessions.js?v=129";
 
 export function createApp(windowRef = window, documentRef = document) {
   const app = createAppContext(windowRef, documentRef);
@@ -12,6 +13,7 @@ export function createApp(windowRef = window, documentRef = document) {
   installSessions(app);
   installCodex(app);
   installFiles(app);
+  installOpenSpec(app);
 
   app.bindEventListeners = function bindEventListeners() {
     const { elements } = app;
@@ -46,6 +48,10 @@ export function createApp(windowRef = window, documentRef = document) {
     elements.compactContextButton?.addEventListener("click", () => app.requestContextCompaction({ automatic: false }));
     elements.toggleSessionsButton.addEventListener("click", app.toggleSessionSidebar);
     elements.sessionBackdrop.addEventListener("click", () => {
+      if (elements.codexView.classList.contains("open-spec-open")) {
+        app.closeOpenSpecPanel?.({ restoreFocus: false });
+        return;
+      }
       if (elements.codexView.classList.contains("files-open")) {
         app.closeFileBrowser?.({ restoreFocus: false });
         return;

@@ -1298,7 +1298,546 @@ body.topbar-collapsed .topbar {
   -webkit-user-select: text;
 }
 
+/* v92 open spec progress */
+
+.topbar-open-spec {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.open-spec-trigger[aria-expanded="true"] {
+  background: rgba(23, 20, 17, 0.08);
+  color: var(--ink);
+}
+
+.open-spec-panel {
+  position: fixed;
+  top: calc(var(--safe-top) + 76px);
+  right: 0;
+  bottom: 0;
+  z-index: 27;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  gap: 12px;
+  width: min(560px, 42vw);
+  min-width: min(390px, calc(100vw - 32px));
+  max-height: none;
+  overflow: hidden;
+  border: 1px solid rgba(126, 106, 84, 0.14);
+  border-right: 0;
+  border-bottom: 0;
+  border-radius: 18px 0 0 0;
+  background: rgba(248, 246, 241, 0.985);
+  box-shadow: -16px 0 34px rgba(23, 20, 17, 0.08);
+  padding: 12px;
+}
+
+.open-spec-panel[hidden] {
+  display: none !important;
+}
+
+.open-spec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.open-spec-head > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.open-spec-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.open-spec-head span,
+.open-spec-status {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.open-spec-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.open-spec-explore,
+.open-spec-refresh,
+.open-spec-close {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 12px;
+  background: rgba(255, 252, 247, 0.74);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.open-spec-explore {
+  color: rgba(47, 87, 82, 0.96);
+  background: rgba(224, 242, 238, 0.82);
+}
+
+.open-spec-explore:not(:disabled):hover,
+.open-spec-explore:not(:disabled):focus-visible {
+  border-color: rgba(47, 87, 82, 0.28);
+  background: rgba(210, 235, 230, 0.92);
+}
+
+.open-spec-explore:not(:disabled):active {
+  transform: translateY(1px);
+}
+
+.open-spec-explore svg,
+.open-spec-refresh svg,
+.open-spec-close svg {
+  width: 16px;
+  height: 16px;
+}
+
+.open-spec-status {
+  min-height: 20px;
+}
+
+.open-spec-panel.is-busy .open-spec-status::after {
+  content: "";
+  display: inline-block;
+  width: 22px;
+  height: 1px;
+  margin-left: 7px;
+  vertical-align: middle;
+  background: linear-gradient(90deg, rgba(86, 129, 122, 0), rgba(86, 129, 122, 0.8), rgba(86, 129, 122, 0));
+  animation: openSpecStatusSweep 1.2s ease-in-out infinite;
+}
+
+.open-spec-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  min-width: 0;
+  border-top: 1px solid rgba(126, 106, 84, 0.08);
+  border-bottom: 1px solid rgba(126, 106, 84, 0.08);
+}
+
+.open-spec-metric {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 8px;
+  border-left: 1px solid rgba(126, 106, 84, 0.08);
+}
+
+.open-spec-metric:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+
+.open-spec-metric span {
+  color: var(--muted-2);
+  font-size: 10px;
+  font-weight: 780;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.open-spec-metric strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.open-spec-timeline {
+  position: relative;
+  min-height: 0;
+  overflow: auto;
+  padding-left: 4px;
+  scrollbar-width: thin;
+}
+
+.open-spec-timeline::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 13px;
+  width: 1px;
+  background: rgba(126, 106, 84, 0.14);
+}
+
+.open-spec-change {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  border-bottom: 1px solid rgba(126, 106, 84, 0.08);
+  border-radius: 14px;
+  padding: 0 0 0 28px;
+  background:
+    linear-gradient(
+      90deg,
+      var(--open-spec-change-fill) 0%,
+      var(--open-spec-change-fill) var(--open-spec-change-progress),
+      rgba(248, 246, 241, 0) calc(var(--open-spec-change-progress) + 18%)
+    );
+  --open-spec-change-progress: 0%;
+  --open-spec-change-fill: rgba(91, 139, 127, 0.14);
+}
+
+.open-spec-change summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 56px;
+  overflow: visible;
+  cursor: pointer;
+  list-style: none;
+  padding: 9px 8px 9px 0;
+}
+
+.open-spec-change summary::-webkit-details-marker {
+  display: none;
+}
+
+.open-spec-change-complete {
+  --open-spec-change-fill: rgba(78, 138, 99, 0.18);
+}
+
+.open-spec-change-archived {
+  --open-spec-change-fill: rgba(126, 135, 146, 0.16);
+}
+
+.open-spec-change-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.open-spec-change-copy span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.open-spec-change-title-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.open-spec-change-title-row strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.open-spec-change-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.open-spec-change-copy-button {
+  flex: 0 0 32px;
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  border: 1px solid rgba(126, 106, 84, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 252, 247, 0.72);
+  color: var(--muted-2);
+  padding: 0;
+}
+
+.open-spec-change-copy-button:hover,
+.open-spec-change-copy-button:focus-visible {
+  background: rgba(126, 106, 84, 0.08);
+  color: var(--ink);
+  outline: 0;
+}
+
+.open-spec-change-copy-button:active {
+  transform: translateY(1px);
+}
+
+.open-spec-change-copy-button svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.open-spec-change-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+}
+
+.open-spec-change-menu-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 32px;
+  min-height: 32px;
+  border: 1px solid rgba(126, 106, 84, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 252, 247, 0.78);
+  color: var(--ink);
+  padding: 0 10px 0 12px;
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 1;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.open-spec-change-menu-button svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  transition: transform 0.16s ease;
+}
+
+.open-spec-change-menu-button:hover,
+.open-spec-change-menu-button:focus-visible {
+  background: rgba(126, 106, 84, 0.08);
+  outline: 0;
+}
+
+.open-spec-change-menu-button:active {
+  transform: translateY(1px);
+}
+
+.open-spec-change-menu-button:disabled {
+  opacity: 0.58;
+}
+
+.open-spec-change-menu-open .open-spec-change-menu-button svg {
+  transform: rotate(180deg);
+}
+
+.open-spec-change-menu-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 3;
+  display: none;
+  min-width: 118px;
+  overflow: hidden;
+  border: 1px solid rgba(126, 106, 84, 0.14);
+  border-radius: 12px;
+  background: rgba(255, 252, 247, 0.98);
+  box-shadow: 0 12px 24px rgba(23, 20, 17, 0.12);
+  padding: 4px;
+}
+
+.open-spec-change-menu-open .open-spec-change-menu-popover {
+  display: grid;
+}
+
+.open-spec-change-menu-popover button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink);
+  padding: 0 10px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.open-spec-change-menu-popover button:hover,
+.open-spec-change-menu-popover button:focus-visible {
+  background: rgba(91, 139, 127, 0.12);
+  outline: 0;
+}
+
+.open-spec-change-menu-popover button:disabled {
+  color: var(--muted-2);
+  opacity: 0.52;
+}
+
+.open-spec-change-copy span {
+  color: var(--muted-2);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.open-spec-change-body {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 0 13px;
+}
+
+.open-spec-change-body p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.open-spec-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.open-spec-tags span {
+  min-height: 24px;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(86, 129, 122, 0.16);
+  border-radius: 999px;
+  background: rgba(86, 129, 122, 0.08);
+  color: #526f68;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.open-spec-task-groups {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.open-spec-task-group {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.open-spec-task-group > strong {
+  color: var(--muted-2);
+  font-size: 10px;
+  font-weight: 780;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.open-spec-task-list {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+  border-top: 1px solid rgba(126, 106, 84, 0.08);
+}
+
+.open-spec-task {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  min-width: 0;
+  border-bottom: 1px solid rgba(126, 106, 84, 0.08);
+  padding: 8px 0;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.open-spec-task.is-complete {
+  color: var(--muted);
+}
+
+.open-spec-check {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  border: 1px solid rgba(126, 106, 84, 0.24);
+  border-radius: 5px;
+  background: rgba(255, 252, 247, 0.72);
+}
+
+.open-spec-task.is-complete .open-spec-check {
+  border-color: rgba(78, 138, 99, 0.28);
+  background: #4e8a63;
+}
+
+.open-spec-task.is-complete .open-spec-check::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 2px;
+  width: 5px;
+  height: 9px;
+  border: solid rgba(255, 252, 247, 0.96);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.open-spec-task-empty,
+.open-spec-empty {
+  color: var(--muted);
+  padding: 16px 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@keyframes openSpecStatusSweep {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: translateX(0);
+  }
+
+  50% {
+    opacity: 1;
+    transform: translateX(8px);
+  }
+}
+
 @media (max-width: 760px) {
+  body.mobile-ui .topbar-open-spec {
+    margin-left: 0;
+  }
+
   body.mobile-ui .topbar-file-browser {
     margin-left: auto;
   }
