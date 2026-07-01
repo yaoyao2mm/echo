@@ -821,12 +821,15 @@
   body.mobile-ui .topbar-brand-copy {
     display: flex;
     align-items: center;
+    flex: 1 1 auto;
     min-height: 28px;
+    min-width: 0;
   }
 
   body.mobile-ui .topbar-brand-copy h1 {
     font-size: 17px;
     line-height: 1;
+    max-width: clamp(116px, 38vw, 210px);
   }
 
   body.mobile-ui .mobile-status-indicator {

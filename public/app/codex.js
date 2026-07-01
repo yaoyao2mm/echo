@@ -148,6 +148,7 @@ export function installCodex(app) {
     });
     app.refreshRuntimeDefaultOptions();
     app.refreshWorktreeModeControls?.();
+    app.refreshTopbarProjectChip();
     app.setTopbarStatus(agentStatusText, agentOnline ? "online" : "idle");
     elements.codexStatusText.textContent = agentOnline ? "本机 agent 在线" : agentStatusText;
     const pendingDecisions = Number(codex.interactive?.pendingInteractions || 0) + Number(codex.interactive?.pendingApprovals || 0);
@@ -170,6 +171,7 @@ export function installCodex(app) {
     }
     app.renderCodexProjectOptions(workspaces, selected, agentAvailable);
     if (elements.codexProject.value) localStorage.setItem("echoCodexProject", elements.codexProject.value);
+    app.refreshTopbarProjectChip();
     if (agentOnline && workspaces.length > 0) app.persistCodexWorkspaces(workspaces);
     app.renderProjectPicker(agentAvailable);
     app.updateComposerAvailability();
@@ -248,6 +250,7 @@ export function installCodex(app) {
       option.value = "";
       option.textContent = agentOnline ? "还没有授权工程目录" : "等待桌面 agent";
       elements.codexProject.append(option);
+      app.refreshTopbarProjectChip();
       return;
     }
     for (const workspace of workspaces) {
@@ -261,6 +264,7 @@ export function installCodex(app) {
     if (selected && workspaces.some((workspace) => workspace.id === selected)) {
       elements.codexProject.value = selected;
     }
+    app.refreshTopbarProjectChip();
   };
 
   app.markCodexConnectionProblem = function markCodexConnectionProblem(message = "连接中断，当前会话已保留。") {

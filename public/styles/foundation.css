@@ -134,7 +134,7 @@ button:disabled {
 }
 
 .topbar-brand-copy {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -143,6 +143,14 @@ button:disabled {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+.topbar-title-row h1 {
+  min-width: 0;
+  max-width: min(42vw, 360px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .topbar-actions {

@@ -15,8 +15,8 @@
         if (localStorage.getItem("echoTheme") === "dark") document.documentElement.dataset.theme = "dark";
       } catch {}
     </script>
-    <link rel="manifest" href="/manifest.webmanifest?v=129" />
-    <link rel="stylesheet" href="/styles.css?v=129" />
+    <link rel="manifest" href="/manifest.webmanifest?v=130" />
+    <link rel="stylesheet" href="/styles.css?v=130" />
   </head>
   <body>
     <main class="shell">
@@ -36,7 +36,7 @@
           </button>
           <div class="topbar-brand-copy">
             <div class="topbar-title-row">
-              <h1>Echo</h1>
+              <h1 id="topbarContextTitle">Echo</h1>
               <span id="mobileStatusIndicator" class="mobile-status-indicator" aria-hidden="true"></span>
             </div>
             <p id="statusText">连接中</p>
@@ -625,6 +625,6 @@
       </section>
     </main>
 
-    <script src="/app.js?v=129" type="module"></script>
+    <script src="/app.js?v=130" type="module"></script>
   </body>
 </html>

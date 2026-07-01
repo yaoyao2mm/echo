@@ -1,9 +1,9 @@
-import { installAuth } from "./auth.js?v=129";
-import { installCodex } from "./codex.js?v=129";
-import { createAppContext, installCore } from "./core.js?v=129";
-import { installFiles } from "./files.js?v=129";
-import { installOpenSpec } from "./open-spec.js?v=129";
-import { installSessions } from "./sessions.js?v=129";
+import { installAuth } from "./auth.js?v=130";
+import { installCodex } from "./codex.js?v=130";
+import { createAppContext, installCore } from "./core.js?v=130";
+import { installFiles } from "./files.js?v=130";
+import { installOpenSpec } from "./open-spec.js?v=130";
+import { installSessions } from "./sessions.js?v=130";
 
 export function createApp(windowRef = window, documentRef = document) {
   const app = createAppContext(windowRef, documentRef);

@@ -78,6 +78,7 @@ export function createAppContext(windowRef = window, documentRef = document) {
       pendingSessionStreamRender: null,
       composingNewSession: false,
       codexWorkspaces: readStoredCodexWorkspaces(windowRef.localStorage),
+      topbarContextTitle: "Echo",
       codexAgentOnline: false,
       codexAgentAvailable: false,
       codexLastAgentSeenAt: "",
@@ -1226,7 +1227,29 @@ export function installCore(app) {
     elements.projectSwitcher.hidden = !app.isLoggedIn() || !state.token;
   };
 
-  app.refreshTopbarProjectChip = app.refreshProjectSwitcherVisibility;
+  app.setTopbarContextTitle = function setTopbarContextTitle(label = "") {
+    const fallback = app.currentProjectId?.() ? "等待桌面" : "Echo";
+    const text = String(label || "").trim() || fallback;
+    state.topbarContextTitle = text;
+    if (elements.topbarContextTitle) {
+      elements.topbarContextTitle.textContent = text;
+      elements.topbarContextTitle.title = text;
+    }
+  };
+
+  app.refreshTopbarProjectChip = function refreshTopbarProjectChip() {
+    app.refreshProjectSwitcherVisibility();
+    const workspace =
+      state.codexWorkspaces.find((item) => item.id === elements.codexProject?.value) ||
+      state.codexWorkspaces.find((item) => item.id === app.currentProjectId?.()) ||
+      null;
+    const title = workspace
+      ? app.workspaceDirectoryName?.(workspace) ||
+        app.workspaceLabel?.(workspace) ||
+        ""
+      : "";
+    app.setTopbarContextTitle(title);
+  };
 
   app.formatRelativeTime = function formatRelativeTime(value) {
     if (!value) return "刚刚";
@@ -1842,6 +1865,7 @@ function normalizeStoredCodexWorkspace(workspace = {}) {
 function queryElements(documentRef) {
   return {
     topbar: documentRef.querySelector(".topbar"),
+    topbarContextTitle: documentRef.querySelector("#topbarContextTitle"),
     themeColorMeta: documentRef.querySelector("#themeColorMeta"),
     appleStatusBarMeta: documentRef.querySelector("#appleStatusBarMeta"),
     statusText: documentRef.querySelector("#statusText"),
