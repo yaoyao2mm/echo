@@ -111,6 +111,68 @@ test("conversation timeline uses the complete relay draft when retained delta ev
   assert.equal(timeline.at(-1).text, "这是完整的前半段，后半段还在继续");
 });
 
+test("session list refresh updates selected pending state when detail load is skipped", async () => {
+  const app = createTimelineApp({
+    state: {
+      selectedCodexJobId: "session-stale-queued",
+      selectedCodexSession: {
+        id: "session-stale-queued",
+        projectId: "echo",
+        status: "queued",
+        pendingCommandCount: 1,
+        queuedCommandCount: 1,
+        leasedCommandCount: 0,
+        messages: [{ role: "user", text: "hi" }],
+        events: [{ id: 1, type: "user.message", text: "hi" }]
+      },
+      composingNewSession: false,
+      showArchivedSessions: false,
+      runtimePreferences: {}
+    }
+  });
+  let statusRailSession = null;
+  let detailLoads = 0;
+  app.elements.codexJobs = createFakeElement();
+  app.currentProjectId = () => "echo";
+  app.sessionBelongsToCurrentProject = (session) => Boolean(session?.id && session.projectId === "echo");
+  app.preferredSession = (jobs) => jobs[0];
+  app.renderSessionButton = (job) => ({ job });
+  app.closeCodexSessionStream = () => {};
+  app.applyRuntimeDraft = () => {};
+  app.renderEmptySessionDetail = () => {};
+  app.refreshActiveSessionHeader = () => {};
+  app.updateComposerAvailability = () => {};
+  app.updateStopButton = () => {};
+  app.renderSessionStatusRail = (session) => {
+    statusRailSession = session;
+  };
+  app.showCodexJob = async () => {
+    detailLoads += 1;
+  };
+
+  await app.renderProjectSessionList(
+    [
+      {
+        id: "session-stale-queued",
+        projectId: "echo",
+        status: "active",
+        pendingCommandCount: 0,
+        queuedCommandCount: 0,
+        leasedCommandCount: 0,
+        updatedAt: "2026-05-04T00:00:05.000Z"
+      }
+    ],
+    { skipSelectedDetailLoad: true }
+  );
+
+  assert.equal(detailLoads, 0);
+  assert.equal(app.state.selectedCodexSession.status, "active");
+  assert.equal(app.state.selectedCodexSession.pendingCommandCount, 0);
+  assert.equal(app.state.selectedCodexSession.queuedCommandCount, 0);
+  assert.deepEqual(app.state.selectedCodexSession.events.map((event) => event.id), [1]);
+  assert.equal(statusRailSession.status, "active");
+});
+
 test("conversation timeline labels assistant messages with the session backend", () => {
   const app = createTimelineApp();
   const timeline = app.buildConversationTimeline({
@@ -584,4 +646,16 @@ function createTimelineApp(options = {}) {
   };
   installSessions(app);
   return app;
+}
+
+function createFakeElement() {
+  return {
+    innerHTML: "",
+    textContent: "",
+    hidden: false,
+    append() {},
+    querySelectorAll: () => [],
+    classList: { toggle() {}, add() {}, remove() {} },
+    setAttribute() {}
+  };
 }

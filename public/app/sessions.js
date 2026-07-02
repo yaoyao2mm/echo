@@ -143,6 +143,11 @@ export function installSessions(app) {
 
     if (state.selectedCodexJobId) {
       if (options.skipSelectedDetailLoad && state.selectedCodexSession?.id === state.selectedCodexJobId) {
+        const selectedSummary = jobs.find((job) => job.id === state.selectedCodexJobId);
+        if (selectedSummary) {
+          state.selectedCodexSession = app.mergeCodexSessionSummary(state.selectedCodexSession, selectedSummary);
+          app.renderSessionStatusRail?.(state.selectedCodexSession);
+        }
         app.refreshActiveSessionHeader();
         app.updateComposerAvailability();
         app.updateStopButton();
@@ -156,6 +161,18 @@ export function installSessions(app) {
     app.closeCodexSessionStream();
     app.applyRuntimeDraft(state.runtimePreferences, { persist: false, dirty: false });
     app.renderEmptySessionDetail({ title: "新会话", body: "直接发送，开始新的 agent 会话。" });
+  };
+
+  app.mergeCodexSessionSummary = function mergeCodexSessionSummary(current, summary) {
+    if (!current || current.id !== summary?.id) return current || summary;
+    const next = {
+      ...current,
+      ...summary
+    };
+    for (const key of ["messages", "events", "approvals", "interactions", "attachments", "artifacts"]) {
+      if (!Array.isArray(summary[key]) && Array.isArray(current[key])) next[key] = current[key];
+    }
+    return next;
   };
 
   app.renderSessionButton = function renderSessionButton(job) {
