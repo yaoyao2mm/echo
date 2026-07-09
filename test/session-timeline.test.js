@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import MarkdownIt from "markdown-it";
 import { installSessions } from "../public/app/sessions.js";
 
 test("conversation timeline keeps streamed follow-up user messages in order when messages snapshot is stale", () => {
@@ -330,6 +331,120 @@ test("conversation timeline renders assistant image artifacts", () => {
   assert.match(html, /\/api\/codex\/artifacts\/artifact_image/);
 });
 
+test("agent markdown renderer supports tables, code, links, task lists, and draft fences", () => {
+  const app = createMarkdownTimelineApp();
+  const rendered = app.renderAgentMarkdown(
+    [
+      "### 结果",
+      "",
+      "- [x] 完成",
+      "- [ ] 复查",
+      "",
+      "| 文件 | 状态 |",
+      "| --- | --- |",
+      "| public/app/sessions.js | modified |",
+      "",
+      "```js",
+      "console.log('ok');",
+      "```",
+      "",
+      "[OpenAI](https://openai.com)"
+    ].join("\n")
+  );
+
+  assert.equal(rendered.degraded, false);
+  assert.match(rendered.html, /<h3>结果<\/h3>/);
+  assert.match(rendered.html, /<table>/);
+  assert.match(rendered.html, /rich-code-block/);
+  assert.match(rendered.html, /data-language="js"/);
+  assert.match(rendered.html, /rich-task-list-item-checked/);
+  assert.match(rendered.html, /target="_blank"/);
+  assert.match(rendered.html, /rel="noreferrer noopener"/);
+
+  const draft = app.renderAgentMarkdown("```diff\n+ added", { draft: true });
+  assert.equal(draft.degraded, false);
+  assert.match(draft.html, /class="language-diff"/);
+  assert.match(draft.html, /\+ added/);
+});
+
+test("agent markdown renderer disables raw html, dangerous links, and markdown images", () => {
+  const app = createMarkdownTimelineApp();
+  const rendered = app.renderAgentMarkdown(
+    [
+      "<script>alert(1)</script>",
+      '<a href="https://example.com" onclick="alert(1)" style="color:red">raw</a>',
+      "[bad](javascript:alert(1))",
+      "![tracking](https://example.com/pixel.png)"
+    ].join("\n")
+  );
+
+  assert.equal(rendered.degraded, false);
+  assert.doesNotMatch(rendered.html, /<script/i);
+  assert.doesNotMatch(rendered.html, /<a\b[^>]*onclick=/i);
+  assert.doesNotMatch(rendered.html, /<a\b[^>]*style=/i);
+  assert.doesNotMatch(rendered.html, /href="javascript:/i);
+  assert.doesNotMatch(rendered.html, /<img\b/i);
+  assert.match(rendered.html, /tracking/);
+});
+
+test("conversation rendering uses assistant markdown and keeps user text plain", () => {
+  const app = createMarkdownTimelineApp();
+  const assistantHtml = app.renderConversationEntry({
+    kind: "message",
+    role: "assistant",
+    roleLabel: "Codex",
+    text: "**Done**\n\n| A | B |\n| --- | --- |\n| 1 | 2 |",
+    at: "2026-05-08T00:00:00.000Z"
+  });
+  assert.match(assistantHtml, /rich-transcript/);
+  assert.match(assistantHtml, /<strong>Done<\/strong>/);
+  assert.match(assistantHtml, /<table>/);
+  assert.equal([...app.state.conversationRawMessages.values()][0], "**Done**\n\n| A | B |\n| --- | --- |\n| 1 | 2 |");
+
+  const userHtml = app.renderConversationEntry({
+    kind: "message",
+    role: "user",
+    text: "**Do not render** <b>x</b>",
+    at: "2026-05-08T00:00:01.000Z"
+  });
+  assert.doesNotMatch(userHtml, /rich-transcript/);
+  assert.doesNotMatch(userHtml, /<strong>Do not render<\/strong>/);
+  assert.match(userHtml, /\*\*Do not render\*\* &lt;b&gt;x&lt;\/b&gt;/);
+});
+
+test("assistant markdown rendering falls back to escaped plain text when libraries are unavailable", () => {
+  const app = createTimelineApp({ window: { location: { origin: "http://localhost" } } });
+  app.escapeHtml = escapeHtmlForTest;
+
+  const html = app.renderConversationEntry({
+    kind: "message",
+    role: "assistant",
+    roleLabel: "Codex",
+    text: "**raw** <b>x</b>",
+    at: "2026-05-08T00:00:00.000Z"
+  });
+
+  assert.doesNotMatch(html, /rich-transcript/);
+  assert.match(html, /\*\*raw\*\* &lt;b&gt;x&lt;\/b&gt;/);
+});
+
+test("interaction other input is hidden until the other option is selected", () => {
+  const app = createTimelineApp();
+  const html = app.renderInteractionQuestion({
+    id: "mode",
+    question: "选择模式",
+    isOther: true,
+    options: [
+      { label: "自动", description: "默认流程" },
+      { label: "手动", description: "用户指定" }
+    ]
+  });
+
+  assert.match(html, /interaction-option-other/);
+  assert.match(html, /interaction-other-field" data-other-field-for="mode" hidden/);
+  assert.match(html, /data-other-for="mode"[^>]*disabled/);
+});
+
 test("conversation timeline de-duplicates mirrored assistant image artifact refs", () => {
   const app = createTimelineApp();
   const artifact = {
@@ -646,6 +761,38 @@ function createTimelineApp(options = {}) {
   };
   installSessions(app);
   return app;
+}
+
+function createMarkdownTimelineApp() {
+  const app = createTimelineApp({
+    window: {
+      location: { origin: "http://localhost" },
+      markdownit: MarkdownIt
+    }
+  });
+  app.escapeHtml = escapeHtmlForTest;
+  app.agentMarkdownSanitizer = {
+    sanitize(html) {
+      return String(html || "")
+        .replace(/\s+on[a-z]+\s*=\s*"[^"]*"/gi, "")
+        .replace(/\s+on[a-z]+\s*=\s*'[^']*'/gi, "")
+        .replace(/\s+style\s*=\s*"[^"]*"/gi, "")
+        .replace(/\s+style\s*=\s*'[^']*'/gi, "")
+        .replace(/\s+href\s*=\s*"javascript:[^"]*"/gi, "")
+        .replace(/\s+href\s*=\s*'javascript:[^']*'/gi, "")
+        .replace(/<img\b[^>]*>/gi, "");
+    }
+  };
+  return app;
+}
+
+function escapeHtmlForTest(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function createFakeElement() {

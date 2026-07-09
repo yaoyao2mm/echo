@@ -50,6 +50,7 @@ function compactAssistantBackendName(value) {
 
 export function installSessions(app) {
   const { document, elements, navigator, state, window: windowRef } = app;
+  state.conversationRawMessages = state.conversationRawMessages || new Map();
 
   app.isCodexDownloadPath = function isCodexDownloadPath(value) {
     return /^\/api\/codex\/(?:attachments|artifacts)\//.test(String(value || ""));
@@ -81,6 +82,185 @@ export function installSessions(app) {
     const backendValue = runtime.backendId || runtime.provider || runtime.backendName || runtime.name || "";
     const label = app.backendDisplayName ? app.backendDisplayName(backendValue) : compactAssistantBackendName(backendValue);
     return label || app.activeAgentLabel?.(job) || "agent";
+  };
+
+  app.renderAgentMarkdown = function renderAgentMarkdown(text, options = {}) {
+    const raw = String(text || "");
+    if (!raw) return { html: "", degraded: false, warnings: [] };
+
+    const renderer = app.agentMarkdownRenderer || app.createAgentMarkdownRenderer();
+    if (!renderer) {
+      return {
+        html: app.escapeHtml(raw),
+        degraded: true,
+        warnings: ["renderer-unavailable"]
+      };
+    }
+
+    try {
+      const source = options.draft ? app.normalizeAgentMarkdownDraft(raw) : raw;
+      const parsed = renderer.markdown.render(source);
+      return {
+        html: renderer.sanitizer.sanitize(parsed, app.agentMarkdownSanitizeConfig()),
+        degraded: false,
+        warnings: []
+      };
+    } catch {
+      return {
+        html: app.escapeHtml(raw),
+        degraded: true,
+        warnings: ["renderer-failed"]
+      };
+    }
+  };
+
+  app.createAgentMarkdownRenderer = function createAgentMarkdownRenderer() {
+    if (app.agentMarkdownRendererAttempted) return app.agentMarkdownRenderer || null;
+    app.agentMarkdownRendererAttempted = true;
+
+    const markdownItFactory = app.agentMarkdownIt || windowRef.markdownit;
+    const sanitizer = app.agentMarkdownSanitizer || windowRef.DOMPurify;
+    if (typeof markdownItFactory !== "function" || !sanitizer || typeof sanitizer.sanitize !== "function") {
+      app.agentMarkdownRenderer = null;
+      return null;
+    }
+
+    try {
+      const markdown = markdownItFactory({
+        html: false,
+        linkify: false,
+        typographer: false,
+        breaks: false
+      });
+      markdown.validateLink = app.isSafeAgentMarkdownHref;
+      app.installAgentMarkdownRules(markdown);
+      app.agentMarkdownRenderer = { markdown, sanitizer };
+      return app.agentMarkdownRenderer;
+    } catch {
+      app.agentMarkdownRenderer = null;
+      return null;
+    }
+  };
+
+  app.installAgentMarkdownRules = function installAgentMarkdownRules(markdown) {
+    if (!markdown?.renderer?.rules) return;
+
+    const defaultLinkOpen =
+      markdown.renderer.rules.link_open ||
+      ((tokens, index, options, env, self) => self.renderToken(tokens, index, options));
+    markdown.renderer.rules.link_open = (tokens, index, options, env, self) => {
+      const token = tokens[index];
+      const href = token.attrGet("href");
+      if (href && !app.isSafeAgentMarkdownHref(href)) token.attrSet("href", "");
+      token.attrSet("target", "_blank");
+      token.attrSet("rel", "noreferrer noopener");
+      return defaultLinkOpen(tokens, index, options, env, self);
+    };
+
+    markdown.renderer.rules.image = (tokens, index) => {
+      const token = tokens[index];
+      return app.escapeHtml(token.content || token.attrGet("alt") || "");
+    };
+
+    markdown.renderer.rules.fence = (tokens, index) => {
+      const token = tokens[index];
+      const language = app.safeAgentMarkdownLanguage(token.info || "");
+      const languageAttr = language ? ` data-language="${app.escapeHtml(language)}"` : "";
+      const classAttr = language ? ` class="language-${app.escapeHtml(language)}"` : "";
+      return `<pre class="rich-code-block"${languageAttr}><code${classAttr}>${app.escapeHtml(token.content)}</code></pre>\n`;
+    };
+
+    markdown.core.ruler.after("inline", "echo_task_lists", (parserState) => {
+      const tokens = parserState.tokens || [];
+      for (let index = 2; index < tokens.length; index += 1) {
+        const inlineToken = tokens[index];
+        if (inlineToken.type !== "inline") continue;
+        if (tokens[index - 1]?.type !== "paragraph_open" || tokens[index - 2]?.type !== "list_item_open") continue;
+        const match = /^\[([ xX])\]\s+/.exec(inlineToken.content || "");
+        if (!match) continue;
+        const listItem = tokens[index - 2];
+        listItem.attrJoin("class", "rich-task-list-item");
+        if (match[1].toLowerCase() === "x") listItem.attrJoin("class", "rich-task-list-item-checked");
+        app.stripTaskListMarker(inlineToken, match[0].length);
+      }
+    });
+  };
+
+  app.agentMarkdownSanitizeConfig = function agentMarkdownSanitizeConfig() {
+    return {
+      ALLOWED_TAGS: [
+        "a",
+        "blockquote",
+        "br",
+        "code",
+        "del",
+        "em",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "hr",
+        "li",
+        "ol",
+        "p",
+        "pre",
+        "strong",
+        "table",
+        "tbody",
+        "td",
+        "th",
+        "thead",
+        "tr",
+        "ul"
+      ],
+      ALLOWED_ATTR: ["class", "data-language", "href", "rel", "target", "title"],
+      ALLOW_DATA_ATTR: false,
+      FORBID_ATTR: ["style"],
+      FORBID_TAGS: ["audio", "embed", "iframe", "img", "math", "object", "script", "style", "svg", "video"]
+    };
+  };
+
+  app.isSafeAgentMarkdownHref = function isSafeAgentMarkdownHref(value) {
+    const href = String(value || "").trim();
+    if (!href) return false;
+    if (/^(#|\/(?!\/)|\.\.?\/)/.test(href)) return true;
+    try {
+      const url = new URL(href, String(windowRef?.location?.origin || "http://localhost"));
+      return ["http:", "https:", "mailto:"].includes(url.protocol);
+    } catch {
+      return false;
+    }
+  };
+
+  app.safeAgentMarkdownLanguage = function safeAgentMarkdownLanguage(value) {
+    const language = String(value || "").trim().split(/\s+/)[0] || "";
+    return /^[A-Za-z0-9_+.#-]{1,32}$/.test(language) ? language : "";
+  };
+
+  app.stripTaskListMarker = function stripTaskListMarker(inlineToken, markerLength) {
+    let remaining = markerLength;
+    inlineToken.content = String(inlineToken.content || "").slice(markerLength);
+    for (const child of inlineToken.children || []) {
+      if (remaining <= 0) break;
+      if (child.type !== "text") continue;
+      const content = String(child.content || "");
+      if (content.length <= remaining) {
+        child.content = "";
+        remaining -= content.length;
+      } else {
+        child.content = content.slice(remaining);
+        remaining = 0;
+      }
+    }
+  };
+
+  app.normalizeAgentMarkdownDraft = function normalizeAgentMarkdownDraft(text) {
+    const source = String(text || "");
+    const fenceMatches = source.match(/(^|\n)```/g) || [];
+    if (fenceMatches.length % 2 === 1) return `${source}\n\`\`\``;
+    return source;
   };
 
   app.loadCodexJobs = async function loadCodexJobs(options = {}) {
@@ -389,6 +569,7 @@ export function installSessions(app) {
     elements.codexJobDetail.hidden = false;
     elements.runLog.hidden = false;
     elements.activeSessionTitle.textContent = app.jobTitle(job);
+    app.resetConversationRawMessages();
     elements.codexRunSummary.innerHTML = `
       <div class="conversation-thread">
         ${timeline.map((entry) => app.renderConversationEntry(entry)).join("")}
@@ -704,12 +885,20 @@ export function installSessions(app) {
     elements.codexApprovals.innerHTML = "";
     for (const approval of approvals) {
       const node = document.createElement("div");
-      node.className = "approval-inline-card";
+      node.className = "approval-inline-card thread-decision-card";
+      const detail = app.approvalDetail(approval);
       node.innerHTML = `
         <div class="approval-inline-copy">
           <span class="thread-status-pill warn">${app.escapeHtml(app.approvalTitle(session, approval))}</span>
           <p>${app.escapeHtml(approval.prompt || approval.method || `${app.conversationAssistantRoleLabel(session)} 请求审批`)}</p>
-          <pre>${app.escapeHtml(app.approvalDetail(approval))}</pre>
+          ${
+            detail
+              ? `<details class="decision-detail">
+                  <summary>查看详情</summary>
+                  <pre>${app.escapeHtml(detail)}</pre>
+                </details>`
+              : ""
+          }
         </div>
         <div class="approval-actions">
           <button class="secondary" type="button" data-decision="denied">拒绝</button>
@@ -765,7 +954,7 @@ export function installSessions(app) {
 
   app.renderInteractionCard = function renderInteractionCard(session, interaction) {
     const node = document.createElement("div");
-    node.className = "approval-inline-card interaction-inline-card";
+    node.className = "approval-inline-card thread-decision-card interaction-inline-card";
     const questions = app.interactionQuestions(interaction);
     node.innerHTML = `
       <div class="approval-inline-copy">
@@ -787,6 +976,8 @@ export function installSessions(app) {
       event.preventDefault();
       app.submitInteractionAnswer(session.id, interaction, form);
     });
+    form.addEventListener("change", () => app.updateInteractionOtherInputs(form));
+    app.updateInteractionOtherInputs(form);
     node.querySelector("[data-interaction-cancel]")?.addEventListener("click", () => {
       app.decideInteraction(session.id, interaction.id, { decision: "cancel" });
     });
@@ -849,8 +1040,10 @@ export function installSessions(app) {
           <label class="interaction-option interaction-option-other">
             <input type="radio" name="${app.escapeHtml(id)}" value="__other__">
             <span>其他</span>
-            <input class="interaction-other-input" type="${secret ? "password" : "text"}" data-other-for="${app.escapeHtml(id)}" autocomplete="off">
           </label>
+          <div class="interaction-other-field" data-other-field-for="${app.escapeHtml(id)}" hidden>
+            <input class="interaction-other-input" type="${secret ? "password" : "text"}" data-other-for="${app.escapeHtml(id)}" autocomplete="off" disabled>
+          </div>
         `
         : "";
       return `
@@ -867,6 +1060,18 @@ export function installSessions(app) {
         <input class="interaction-text-input" name="${app.escapeHtml(id)}" type="${secret ? "password" : "text"}" autocomplete="off">
       </label>
     `;
+  };
+
+  app.updateInteractionOtherInputs = function updateInteractionOtherInputs(form) {
+    for (const input of form.querySelectorAll(".interaction-other-input")) {
+      const fieldId = input.dataset.otherFor || "";
+      const escapedFieldId = app.cssEscape(fieldId);
+      const selected = form.querySelector(`input[type="radio"][name="${escapedFieldId}"]:checked`);
+      const active = selected?.value === "__other__";
+      input.disabled = !active;
+      const field = form.querySelector(`[data-other-field-for="${escapedFieldId}"]`);
+      if (field) field.hidden = !active;
+    }
   };
 
   app.submitInteractionAnswer = async function submitInteractionAnswer(sessionId, interaction, form) {
@@ -1207,6 +1412,7 @@ export function installSessions(app) {
 
   app.renderConversationThread = function renderConversationThread(job, errorText = "") {
     const timeline = app.buildConversationTimeline(job, errorText);
+    app.resetConversationRawMessages();
     return timeline.map(app.renderConversationEntry).join("");
   };
 
@@ -1953,19 +2159,69 @@ export function installSessions(app) {
     const timeLabel = entry.at ? app.formatMessageTime(entry.at) : "";
     const attachmentsHtml = app.renderConversationAttachments(entry.attachments || [], { role: entry.role });
     const actionsHtml = entry.text ? app.renderConversationActions() : "";
+    const rawMessageId = entry.text ? app.rememberConversationRawMessage(entry) : "";
+    const renderedText = entry.text ? app.renderConversationMessageText(entry) : { html: "", rich: false };
+    const richClass = renderedText.rich ? " rich-transcript" : "";
+    const rawMessageAttr = rawMessageId ? ` data-raw-message-id="${app.escapeHtml(rawMessageId)}"` : "";
 
     return `
-      <article class="thread-message ${roleClass}">
+      <article class="thread-message ${roleClass}"${rawMessageAttr}>
         <div class="thread-message-meta">
           <span class="thread-message-role">${app.escapeHtml(roleLabel)}</span>
           ${draftBadge}
           ${timeLabel ? `<span class="thread-message-time">${app.escapeHtml(timeLabel)}</span>` : ""}
         </div>
-        ${entry.text ? `<div class="thread-bubble ${bubbleClass}">${app.escapeHtml(entry.text)}</div>` : ""}
+        ${entry.text ? `<div class="thread-bubble ${bubbleClass}${richClass}">${renderedText.html}</div>` : ""}
         ${attachmentsHtml}
         ${actionsHtml}
       </article>
     `;
+  };
+
+  app.renderConversationMessageText = function renderConversationMessageText(entry) {
+    if (entry.role !== "assistant") {
+      return { html: app.escapeHtml(entry.text), rich: false };
+    }
+    const rendered = app.renderAgentMarkdown(entry.text, { draft: entry.draft });
+    return { html: rendered.html, rich: !rendered.degraded };
+  };
+
+  app.resetConversationRawMessages = function resetConversationRawMessages() {
+    state.conversationRawMessages = new Map();
+  };
+
+  app.rememberConversationRawMessage = function rememberConversationRawMessage(entry) {
+    const text = String(entry?.text || "");
+    if (!text) return "";
+    if (!state.conversationRawMessages || typeof state.conversationRawMessages.set !== "function") {
+      state.conversationRawMessages = new Map();
+    }
+    const id = app.conversationRawMessageId(entry);
+    state.conversationRawMessages.set(id, text);
+    return id;
+  };
+
+  app.conversationRawMessageId = function conversationRawMessageId(entry) {
+    const text = String(entry?.text || "");
+    const key = [
+      entry?.role || "",
+      entry?.externalKey || "",
+      entry?.eventId || "",
+      entry?.at || "",
+      text.length,
+      app.hashConversationText(text)
+    ].join(":");
+    return `msg_${app.hashConversationText(key)}`;
+  };
+
+  app.hashConversationText = function hashConversationText(value) {
+    let hash = 2166136261;
+    const text = String(value || "");
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
   };
 
   app.renderConversationActions = function renderConversationActions() {
@@ -1993,7 +2249,8 @@ export function installSessions(app) {
     if (!button || !elements.codexRunSummary.contains(button)) return;
 
     const message = button.closest(".thread-message");
-    const text = message?.querySelector(".thread-bubble")?.textContent || "";
+    const rawMessageId = message?.dataset?.rawMessageId || "";
+    const text = state.conversationRawMessages?.get(rawMessageId) || message?.querySelector(".thread-bubble")?.textContent || "";
     if (!text) return;
 
     event.preventDefault();

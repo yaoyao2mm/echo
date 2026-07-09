@@ -404,6 +404,30 @@
   color: var(--ink);
 }
 
+:root[data-theme="dark"] .rich-transcript code,
+:root[data-theme="dark"] .rich-transcript pre.rich-code-block {
+  border-color: rgba(139, 154, 174, 0.15);
+  background: rgba(12, 16, 22, 0.84);
+}
+
+:root[data-theme="dark"] .rich-transcript th,
+:root[data-theme="dark"] .rich-transcript td {
+  border-color: rgba(139, 154, 174, 0.15);
+}
+
+:root[data-theme="dark"] .rich-transcript th {
+  background: rgba(139, 154, 174, 0.1);
+}
+
+:root[data-theme="dark"] .rich-transcript blockquote {
+  border-left-color: rgba(139, 154, 174, 0.2);
+}
+
+:root[data-theme="dark"] .rich-transcript li.rich-task-list-item::before {
+  border-color: rgba(139, 154, 174, 0.28);
+  background: rgba(12, 16, 22, 0.8);
+}
+
 :root[data-theme="dark"] .thread-status-pill {
   background: rgba(139, 154, 174, 0.12);
   color: #b8c2d0;
@@ -430,6 +454,35 @@
 
 :root[data-theme="dark"] .thread-test-artifact {
   color: #bcc8ff;
+}
+
+:root[data-theme="dark"] .approval-inline-card {
+  border-color: rgba(225, 184, 111, 0.16);
+  background: rgba(42, 34, 21, 0.62);
+}
+
+:root[data-theme="dark"] .interaction-inline-card {
+  border-color: rgba(139, 154, 174, 0.16);
+  background: rgba(16, 24, 29, 0.72);
+}
+
+:root[data-theme="dark"] .approval-inline-copy p,
+:root[data-theme="dark"] .interaction-question-copy {
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .decision-detail pre,
+:root[data-theme="dark"] .interaction-option,
+:root[data-theme="dark"] .interaction-text-input,
+:root[data-theme="dark"] .interaction-other-input {
+  border-color: rgba(139, 154, 174, 0.15);
+  background: rgba(12, 16, 22, 0.58);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .interaction-option:has(input[type="radio"]:checked) {
+  border-color: rgba(124, 176, 196, 0.34);
+  background: rgba(41, 88, 108, 0.2);
 }
 
 :root[data-theme="dark"] .session-status-rail {

@@ -982,6 +982,11 @@
     max-width: min(92%, 32rem);
   }
 
+  body.mobile-ui .thread-message-assistant .thread-bubble.rich-transcript {
+    width: min(100%, calc(100vw - var(--mobile-chat-rail) - var(--mobile-chat-rail) - var(--safe-left) - var(--safe-right) - 20px));
+    max-width: min(100%, calc(100vw - var(--mobile-chat-rail) - var(--mobile-chat-rail) - var(--safe-left) - var(--safe-right) - 20px));
+  }
+
   body.mobile-ui .thread-message-system .thread-plan-card {
     width: min(100%, calc(100vw - var(--mobile-chat-rail) - var(--mobile-chat-rail) - var(--safe-left) - var(--safe-right) - 20px));
     max-width: min(100%, calc(100vw - var(--mobile-chat-rail) - var(--mobile-chat-rail) - var(--safe-left) - var(--safe-right) - 20px));

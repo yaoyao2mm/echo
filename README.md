@@ -77,6 +77,7 @@ Echo 不是远程 shell。手机不能传任意本机路径，不能直接执行
 - **手机优先 PWA**：移动端任务输入、项目选择、backend/model/权限选择、会话列表、工作台、日志、审批、文件浏览、快速指令和深色模式。
 - **实时会话**：支持新会话、继续会话、计划/执行模式、取消当前 turn、失败恢复、归档/恢复、在支持的 backend 上进行 context compaction 和最终回复查看。
 - **SSE 进度流**：会话事件通过 SSE 实时推送，轮询保留为兼容兜底。
+- **Agent transcript 渲染**：assistant 回复在手机端安全渲染 Markdown/GFM，包括标题、列表、表格、链接、代码块和 checklist；命令审批、文件审批和交互问题使用紧凑 decision controls，复制仍保留原始 Markdown/text。
 - **审批与交互**：支持审批的 backend 会把命令/补丁审批以及交互式问题转发到手机端，并要求明确批准、拒绝或回答；不支持这些流程的 backend 会在手机端直接隐藏或阻止对应能力。
 - **受控 workspace**：手机只能选择桌面 agent 广告的 `ECHO_CODEX_WORKSPACES` 或桌面端创建的 managed workspace。
 - **代码浏览**：手机端可列出和预览 allowlist workspace 内的文本文件；路径必须相对 workspace，敏感文件和越界 symlink 会被阻止。
@@ -371,6 +372,7 @@ ECHO_AGENT_BACKENDS_JSON='[
 - 手机不能指定任意本机路径；项目来自 desktop agent allowlist 或桌面端创建的 managed workspace。
 - 文件浏览只允许相对路径，限制在所选 workspace 内，并阻止敏感文件预览和越界 symlink。
 - Quick skill 只是保存 prompt，不新增任意 shell/path API。
+- Transcript renderer 禁用 raw HTML、危险链接协议、事件属性、inline style 和 Markdown 远程图片；agent 输出里的路径、命令和 shell 文本只作为文本或结构化摘要展示，不会变成手机端可执行操作。
 - Desktop agent 只主动连接 relay，不需要把本机端口暴露到公网。
 - Codex app-server 始终只在 desktop agent 本地通过 stdio 使用，不要直接暴露到公网。
 - Relay 会保存 prompt、会话事件、消息、审批、交互请求、附件、产物、日志和最终回复；请部署在你信任的基础设施上。
@@ -482,6 +484,7 @@ The table above describes the default capability surface, not a promise that a s
 - **Phone-first PWA**: mobile composer, project picker, backend/model/permission controls, session list, workbench, logs, approvals, file browser, quick skills, and dark mode.
 - **Live sessions**: start sessions, continue sessions, choose plan/execute mode, cancel the active turn, recover failures, archive/restore, compact context on supported backends, and inspect final answers.
 - **SSE progress stream**: session events stream over SSE with polling kept as fallback.
+- **Agent transcript rendering**: assistant replies render safe Markdown/GFM on mobile, including headings, lists, tables, links, code fences, and checklists. Command/file approvals and interactive questions use compact decision controls, while copy actions keep the original Markdown/text.
 - **Approvals and interactions**: backends that support approval flows forward command/patch approvals and interactive questions to mobile for explicit decisions, while unsupported backends hide or block those controls.
 - **Controlled workspaces**: the phone can only choose `ECHO_CODEX_WORKSPACES` advertised by the desktop agent or desktop-created managed workspaces.
 - **Code browsing**: the phone can list and preview text files inside allowlisted workspaces. Paths must be relative, sensitive previews are blocked, and symlinks cannot escape the workspace.
@@ -776,6 +779,7 @@ The desktop is the source of runtime policy. The phone can request backend, mode
 - The phone cannot choose arbitrary local paths; projects come from the desktop agent allowlist or desktop-created managed workspaces.
 - File browsing only accepts relative paths inside the selected workspace and blocks sensitive previews and escaping symlinks.
 - Quick skills are saved prompts only; they do not add arbitrary shell/path APIs.
+- The transcript renderer disables raw HTML, dangerous link protocols, event attributes, inline styles, and Markdown remote images. Paths, commands, and shell output from an agent are displayed only as text or structured summaries, never as executable mobile actions.
 - The desktop agent only opens outbound connections to the relay; it does not require inbound access to the desktop.
 - The Codex app-server remains local to the desktop agent over stdio and must not be exposed directly to the internet.
 - The relay stores prompts, session events, messages, approvals, interaction requests, attachments, artifacts, logs, and final answers. Run it on infrastructure you trust.
