@@ -404,6 +404,24 @@
   color: var(--ink);
 }
 
+:root[data-theme="dark"] .rich-transcript h1,
+:root[data-theme="dark"] .rich-transcript h2,
+:root[data-theme="dark"] .rich-transcript h3,
+:root[data-theme="dark"] .rich-transcript h4,
+:root[data-theme="dark"] .rich-transcript h5,
+:root[data-theme="dark"] .rich-transcript h6 {
+  color: #edf2f7;
+}
+
+:root[data-theme="dark"] .rich-transcript p,
+:root[data-theme="dark"] .rich-transcript strong {
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .rich-transcript li::marker {
+  color: #b8c2d0;
+}
+
 :root[data-theme="dark"] .rich-transcript code,
 :root[data-theme="dark"] .rich-transcript pre.rich-code-block {
   border-color: rgba(139, 154, 174, 0.15);
@@ -417,10 +435,12 @@
 
 :root[data-theme="dark"] .rich-transcript th {
   background: rgba(139, 154, 174, 0.1);
+  color: #eef3f8;
 }
 
 :root[data-theme="dark"] .rich-transcript blockquote {
   border-left-color: rgba(139, 154, 174, 0.2);
+  color: #c8d1dd;
 }
 
 :root[data-theme="dark"] .rich-transcript li.rich-task-list-item::before {

@@ -931,9 +931,14 @@
 
 .thread-bubble.rich-transcript {
   display: grid;
-  gap: 10px;
+  gap: 9px;
   width: min(100%, 44rem);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.58;
   white-space: normal;
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
 }
 
 .rich-transcript > * {
@@ -955,27 +960,53 @@
   margin: 0;
 }
 
+.rich-transcript p {
+  color: var(--ink);
+  font-size: 1em;
+  line-height: 1.58;
+}
+
+.rich-transcript strong {
+  color: #201c18;
+  font-weight: 680;
+}
+
 .rich-transcript h1,
 .rich-transcript h2,
 .rich-transcript h3,
 .rich-transcript h4,
 .rich-transcript h5,
 .rich-transcript h6 {
-  font-size: 14px;
-  line-height: 1.35;
-  font-weight: 780;
+  color: #201c18;
+  font-size: 1em;
+  line-height: 1.42;
+  font-weight: 760;
+}
+
+.rich-transcript h1,
+.rich-transcript h2 {
+  font-size: 1.04em;
 }
 
 .rich-transcript ul,
 .rich-transcript ol {
   display: grid;
-  gap: 4px;
-  padding-left: 1.25rem;
+  gap: 3px;
+  padding-left: 1.18rem;
+  font-size: 1em;
+  line-height: 1.55;
 }
 
 .rich-transcript li {
   min-width: 0;
   overflow-wrap: anywhere;
+  font-size: 1em;
+  font-weight: 450;
+}
+
+.rich-transcript li::marker {
+  color: #5f574f;
+  font-weight: 650;
 }
 
 .rich-transcript li.rich-task-list-item {
@@ -1004,7 +1035,7 @@
 
 .rich-transcript blockquote {
   border-left: 3px solid rgba(126, 106, 84, 0.18);
-  color: var(--muted);
+  color: #4b4640;
   padding-left: 10px;
 }
 
@@ -1068,7 +1099,7 @@
   box-sizing: border-box;
   border-collapse: collapse;
   border-spacing: 0;
-  font-size: 12px;
+  font-size: 0.92em;
   line-height: 1.45;
 }
 
@@ -1083,7 +1114,8 @@
 
 .rich-transcript th {
   background: rgba(23, 20, 17, 0.045);
-  font-weight: 780;
+  color: #28231e;
+  font-weight: 720;
 }
 
 .thread-bubble-error {
