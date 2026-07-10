@@ -225,8 +225,14 @@ export function sanitizeRuntimeForAgent(requestedRuntime = {}, agentRuntime = {}
       ? selectedBackend.unsupportedModels.map((model) => String(model || "").trim()).filter(Boolean)
       : []
   );
-  const model = sanitizeModel(requested.model, { supportedModelIds, unsupportedModelIds, hasSupportedModelList: supportedModels.length > 0 });
-  const reasoningEffort = sanitizeReasoningEffort(requested.reasoningEffort || requested.effort, model || selectedBackend.model, supportedModels);
+  const hasSupportedModelList = supportedModels.length > 0;
+  const model = sanitizeModel(requested.model, { supportedModelIds, unsupportedModelIds, hasSupportedModelList });
+  const requestedReasoningEffort = requested.reasoningEffort || requested.effort;
+  const selectedModelInfo = supportedModels.find((item) => item.id === model || item.model === model);
+  const effectiveReasoningEffort = requestedReasoningEffort || (model ? selectedModelInfo?.defaultReasoningEffort : "");
+  const reasoningEffort = requestedModel && !model
+    ? ""
+    : sanitizeReasoningEffort(effectiveReasoningEffort, model || selectedBackend.model, supportedModels);
   const worktreeModeExplicit = hasExplicitWorktreeMode(requested);
   const worktreeMode = sanitizeWorktreeMode(requested.worktreeMode, selectedBackend.worktreeMode, { requestedExplicit: worktreeModeExplicit });
   const backendName = String(
@@ -257,7 +263,7 @@ export function sanitizeRuntimeForAgent(requestedRuntime = {}, agentRuntime = {}
 
 export function normalizeReasoningEffort(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  return ["low", "medium", "high", "xhigh"].includes(normalized) ? normalized : "";
+  return ["low", "medium", "high", "xhigh", "max"].includes(normalized) ? normalized : "";
 }
 
 function unsupportedModels() {

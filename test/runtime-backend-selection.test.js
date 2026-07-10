@@ -59,6 +59,41 @@ test("sanitizeRuntimeForAgent selects the requested backend from desktop-adverti
   assert.equal(runtime.worktreeMode, "always");
 });
 
+test("sanitizeRuntimeForAgent keeps a desktop-advertised GPT-5.6 model and max effort", () => {
+  const runtime = sanitizeRuntimeForAgent(
+    { backendId: "codex", model: "gpt-5.6-sol", reasoningEffort: "max" },
+    {
+      backendId: "codex",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      supportedModels: [
+        {
+          id: "gpt-5.6-sol",
+          displayName: "GPT-5.6 Sol",
+          supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"]
+        }
+      ]
+    }
+  );
+
+  assert.equal(runtime.model, "gpt-5.6-sol");
+  assert.equal(runtime.reasoningEffort, "max");
+});
+
+test("sanitizeRuntimeForAgent rejects models the desktop did not advertise", () => {
+  const runtime = sanitizeRuntimeForAgent(
+    { backendId: "codex", model: "gpt-unadvertised", reasoningEffort: "max" },
+    {
+      backendId: "codex",
+      provider: "codex",
+      supportedModels: [{ id: "gpt-5.6-sol", supportedReasoningEfforts: ["max"] }]
+    }
+  );
+
+  assert.equal(runtime.model, "");
+  assert.equal(runtime.reasoningEffort, "");
+});
+
 test("sanitizeRuntimeForAgent keeps the requested backend when multiple backends expose the requested model", () => {
   const runtime = sanitizeRuntimeForAgent(
     {

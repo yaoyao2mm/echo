@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CodexBackendAdapter } from "../src/lib/codexBackendAdapter.js";
+import { CodexBackendAdapter, mergeConfiguredCodexModel } from "../src/lib/codexBackendAdapter.js";
 import { normalizeSupportedModels } from "../src/lib/codexRuntime.js";
 
 function baseRuntimeSnapshot() {
@@ -77,7 +77,7 @@ test("CodexBackendAdapter preserves the last successful capability probe while t
     runningSessionCount: 0
   });
   assert.equal(probeCount, 1);
-  assert.equal(refreshed.modelCapabilitySource, "codex-app-server");
+  assert.equal(refreshed.modelCapabilitySource, "codex-app-server+desktop-config");
   assert.equal(refreshed.supportedModels[0].id, "gpt-5.5");
   assert.equal(refreshed.supportedModels[0].displayName, "GPT-5.5");
 
@@ -86,9 +86,23 @@ test("CodexBackendAdapter preserves the last successful capability probe while t
     runningSessionCount: 0
   });
   assert.equal(probeCount, 1);
-  assert.equal(busy.modelCapabilitySource, "codex-app-server");
+  assert.equal(busy.modelCapabilitySource, "codex-app-server+desktop-config");
   assert.equal(busy.supportedModels[0].id, "gpt-5.5");
   assert.equal(busy.supportedModels[0].displayName, "GPT-5.5");
   assert.equal(busy.backendId, "codex");
   assert.equal(busy.provider, "codex");
+});
+
+test("mergeConfiguredCodexModel advertises a configured GPT-5.6 model with max effort", () => {
+  const models = mergeConfiguredCodexModel(
+    [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true, supportedReasoningEfforts: ["xhigh"] }],
+    { model: "gpt-5.6-sol", reasoningEffort: "max" }
+  );
+
+  assert.deepEqual(models.map((model) => model.id), ["gpt-5.5", "gpt-5.6-sol"]);
+  assert.equal(models[0].isDefault, false);
+  assert.equal(models[1].displayName, "GPT-5.6 Sol");
+  assert.equal(models[1].isDefault, true);
+  assert.deepEqual(models[1].supportedReasoningEfforts, ["low", "medium", "high", "xhigh", "max"]);
+  assert.equal(models[1].defaultReasoningEffort, "max");
 });
