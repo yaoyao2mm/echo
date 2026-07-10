@@ -428,6 +428,11 @@
   background: rgba(12, 16, 22, 0.84);
 }
 
+:root[data-theme="dark"] .rich-transcript code {
+  border-color: rgba(139, 154, 174, 0.12);
+  background: rgba(139, 154, 174, 0.08);
+}
+
 :root[data-theme="dark"] .rich-transcript th,
 :root[data-theme="dark"] .rich-transcript td {
   border-color: rgba(139, 154, 174, 0.15);
