@@ -10,9 +10,11 @@ process.env.HOME = tempHome;
 process.env.ECHO_MODE = "relay";
 process.env.ECHO_TOKEN = "test-token";
 process.env.ECHO_CODEX_LEASE_MS = "60000";
+process.env.ECHO_CODEX_MANAGED_WORKSPACES_FILE = path.join(tempHome, ".echo-voice", "managed-workspaces.json");
 
 const store = await import("../src/lib/codexStore.js");
 const queue = await import("../src/lib/codexQueue.js");
+const authStore = await import("../src/lib/authStore.js");
 const db = new Database(path.join(tempHome, ".echo-voice", "echo.sqlite"));
 
 test("status snapshot preserves backend contract metadata from desktop agents", () => {
@@ -46,6 +48,13 @@ test("status snapshot preserves backend contract metadata from desktop agents", 
         unsupportedFeatures: ["attachments", "remote-context-compaction"]
       },
       unsupportedFeatures: ["attachments", "remote-context-compaction"],
+      installedSkills: [
+        {
+          name: "design-taste-frontend",
+          description: "Premium frontend design rules.",
+          providers: [{ provider: "codex", label: "Codex" }]
+        }
+      ],
       health: {
         ok: true,
         state: "ready",
@@ -55,6 +64,14 @@ test("status snapshot preserves backend contract metadata from desktop agents", 
         checkedAt: "2026-05-07T00:00:00.000Z",
         reason: "",
         checks: { command: true, modelProbe: true }
+      },
+      mcp: {
+        activeProfileId: "memory",
+        snapshotHash: "current-mcp-hash",
+        appliedSnapshotHash: "previous-mcp-hash",
+        hasUpdates: true,
+        profiles: [{ id: "memory", label: "Memory", serverIds: ["memory"] }],
+        targetClients: ["codex"]
       }
     }
   });
@@ -66,6 +83,331 @@ test("status snapshot preserves backend contract metadata from desktop agents", 
   assert.equal(status.runtime.capabilities.supports.worktree, true);
   assert.equal(status.runtime.capabilities.supports.gitSummary, true);
   assert.equal(status.runtime.unsupportedFeatures.includes("remote-context-compaction"), true);
+  assert.equal(status.runtime.installedSkills[0].name, "design-taste-frontend");
+  assert.equal(status.runtime.mcp.activeProfileId, "memory");
+  assert.equal(status.runtime.mcp.snapshotHash, "current-mcp-hash");
+  assert.equal(status.runtime.mcp.appliedSnapshotHash, "previous-mcp-hash");
+  assert.equal(status.runtime.mcp.hasUpdates, true);
+  assert.equal(status.runtime.mcp.profiles[0].label, "Memory");
+});
+
+test("agent skill commands validate owner advertised skill and provider", () => {
+  store.resetStoreForTest();
+
+  queue.updateCodexAgent({
+    id: "skill-agent",
+    ownerUser: "alice",
+    workspaces: [{ id: "echo", label: "Echo", path: "/workspace/echo" }],
+    runtime: {
+      command: "fake-codex",
+      agentSkills: {
+        capability: {
+          canManage: true,
+          providers: [{ provider: "codex", label: "Codex" }]
+        },
+        skills: [
+          {
+            id: "skill:known",
+            name: "design-taste-frontend",
+            enabled: true,
+            showInComposer: true,
+            providers: [{ provider: "codex", label: "Codex", enabled: true }]
+          }
+        ]
+      }
+    }
+  });
+
+  const user = { username: "alice", displayName: "Alice", role: "user" };
+  const command = queue.createCodexAgentSkillCommand({
+    type: "agent-skill.update",
+    targetAgentId: "skill-agent",
+    skillId: "skill:known",
+    enabled: true,
+    showInComposer: false,
+    targetProviders: ["codex"],
+    requestedBy: "alice",
+    ownerUser: "alice",
+    path: "/tmp/should-not-forward",
+    content: "SKILL.md body",
+    user
+  });
+
+  assert.equal(command.type, "agent-skill.update");
+  assert.deepEqual(command.payload, {
+    requestedBy: "alice",
+    skillId: "skill:known",
+    enabled: true,
+    showInComposer: false,
+    targetProviders: ["codex"]
+  });
+
+  assert.throws(
+    () =>
+      queue.createCodexAgentSkillCommand({
+        type: "agent-skill.update",
+        targetAgentId: "skill-agent",
+        skillId: "skill:unknown",
+        targetProviders: ["codex"],
+        user
+      }),
+    /Unknown agent skill/
+  );
+  assert.throws(
+    () =>
+      queue.createCodexAgentSkillCommand({
+        type: "agent-skill.update",
+        targetAgentId: "skill-agent",
+        skillId: "skill:known",
+        targetProviders: ["claude-code"],
+        user
+      }),
+    /Unknown Agent Skill backend/
+  );
+  assert.throws(
+    () =>
+      queue.createCodexAgentSkillCommand({
+        type: "agent-skill.update",
+        targetAgentId: "skill-agent",
+        skillId: "skill:known",
+        targetProviders: ["codex"],
+        user: { username: "bob", role: "user" }
+      }),
+    /Desktop agent is not online/
+  );
+});
+
+test("agent skill import command only forwards controlled GitHub payload", () => {
+  store.resetStoreForTest();
+
+  queue.updateCodexAgent({
+    id: "skill-import-agent",
+    ownerUser: "alice",
+    workspaces: [{ id: "echo", label: "Echo", path: "/workspace/echo" }],
+    runtime: {
+      command: "fake-codex",
+      agentSkills: {
+        capability: {
+          canManage: true,
+          providers: [
+            { provider: "codex", label: "Codex" },
+            { provider: "claude-code", label: "Claude Code" }
+          ]
+        },
+        skills: []
+      }
+    }
+  });
+
+  const command = queue.createCodexAgentSkillCommand({
+    type: "agent-skill.import",
+    targetAgentId: "skill-import-agent",
+    sourceUrl: "https://github.com/example/skills/tree/main/browser",
+    targetProviders: ["codex"],
+    requestedBy: "alice",
+    ownerUser: "alice",
+    path: "/tmp/should-not-forward",
+    content: "SKILL.md body",
+    user: { username: "alice", displayName: "Alice", role: "user" }
+  });
+
+  assert.equal(command.type, "agent-skill.import");
+  assert.deepEqual(command.payload, {
+    requestedBy: "alice",
+    sourceUrl: "https://github.com/example/skills/tree/main/browser",
+    enabled: true,
+    showInComposer: true,
+    targetProviders: ["codex"]
+  });
+
+  assert.throws(
+    () =>
+      queue.createCodexAgentSkillCommand({
+        type: "agent-skill.import",
+        targetAgentId: "skill-import-agent",
+        sourceUrl: "https://github.com/example/skills",
+        targetProviders: ["external"],
+        user: { username: "alice", role: "user" }
+      }),
+    /Unknown Agent Skill backend/
+  );
+});
+
+test("desktop plugin commands only accept advertised ids and bounded state", () => {
+  store.resetStoreForTest();
+
+  queue.updateCodexAgent({
+    id: "plugin-agent",
+    ownerUser: "alice",
+    workspaces: [{ id: "echo", label: "Echo", path: "/workspace/echo" }],
+    runtime: {
+      command: "fake-codex",
+      plugins: {
+        capability: { canManage: true, commandTypes: ["plugin.list", "plugin.update"] },
+        plugins: [{ id: "open-spec", name: "OpenSpec", enabled: true }]
+      }
+    }
+  });
+
+  const user = { username: "alice", displayName: "Alice", role: "user" };
+  const command = queue.createCodexDesktopPluginCommand({
+    type: "plugin.update",
+    targetAgentId: "plugin-agent",
+    pluginId: "open-spec",
+    enabled: false,
+    path: "/tmp/should-not-forward",
+    content: "arbitrary plugin code",
+    requestedBy: "alice",
+    ownerUser: "alice",
+    user
+  });
+  assert.equal(command.type, "plugin.update");
+  assert.deepEqual(command.payload, { requestedBy: "alice", pluginId: "open-spec", enabled: false });
+
+  assert.throws(
+    () => queue.createCodexDesktopPluginCommand({ type: "plugin.update", targetAgentId: "plugin-agent", pluginId: "unknown", enabled: true, user }),
+    /Unknown desktop plugin/
+  );
+  assert.throws(
+    () => queue.createCodexDesktopPluginCommand({ type: "plugin.update", targetAgentId: "plugin-agent", pluginId: "open-spec", enabled: "yes", user }),
+    /enabled state is required/
+  );
+});
+
+test("orchestration plugin commands enforce advertised dependencies and Worktree capability", () => {
+  const user = { username: "alice", role: "owner" };
+  const agent = queue.updateCodexAgent({
+    id: "orchestration-plugin-agent",
+    ownerUser: "alice",
+    workspaces: [{ id: "demo", path: "/tmp/demo" }],
+    runtime: {
+      plugins: {
+        capability: { canManage: true, commandTypes: ["plugin.list", "plugin.update"] },
+        plugins: [
+          { id: "open-spec", enabled: true, requires: [], prerequisites: {} },
+          {
+            id: "orchestration",
+            enabled: false,
+            requires: ["open-spec"],
+            prerequisites: { managedWorktree: false }
+          }
+        ]
+      }
+    }
+  });
+
+  assert.throws(
+    () => queue.createCodexDesktopPluginCommand({
+      type: "plugin.update",
+      targetAgentId: agent.id,
+      pluginId: "orchestration",
+      enabled: true,
+      user
+    }),
+    /Worktree capability is unavailable/
+  );
+
+  queue.updateCodexAgent({
+    ...agent,
+    runtime: {
+      ...agent.runtime,
+      plugins: {
+        ...agent.runtime.plugins,
+        plugins: agent.runtime.plugins.plugins.map((plugin) =>
+          plugin.id === "orchestration"
+            ? { ...plugin, prerequisites: { managedWorktree: true } }
+            : plugin
+        )
+      }
+    }
+  });
+  const command = queue.createCodexDesktopPluginCommand({
+    type: "plugin.update",
+    targetAgentId: agent.id,
+    pluginId: "orchestration",
+    enabled: true,
+    user
+  });
+  assert.equal(command.payload.pluginId, "orchestration");
+});
+
+test("OpenSpec file requests require the desktop plugin to be enabled", () => {
+  store.resetStoreForTest();
+  const user = { username: "alice", role: "user" };
+  const agent = {
+    id: "plugin-files-agent",
+    ownerUser: "alice",
+    workspaces: [{ id: "echo", label: "Echo", path: "/workspace/echo" }],
+    runtime: {
+      command: "fake-codex",
+      plugins: {
+        capability: { canManage: true },
+        plugins: [{ id: "open-spec", name: "OpenSpec", enabled: false }]
+      }
+    }
+  };
+  queue.updateCodexAgent(agent);
+  assert.throws(
+    () => queue.createCodexFileRequest({ type: "open-spec-summary", projectId: "echo", targetAgentId: agent.id, ownerUser: "alice", user }),
+    /OpenSpec plugin is disabled/
+  );
+
+  queue.updateCodexAgent({
+    ...agent,
+    runtime: { ...agent.runtime, plugins: { ...agent.runtime.plugins, plugins: [{ id: "open-spec", enabled: true }] } }
+  });
+  const request = queue.createCodexFileRequest({
+    type: "open-spec-summary",
+    projectId: "echo",
+    targetAgentId: agent.id,
+    ownerUser: "alice",
+    user
+  });
+  assert.equal(request.type, "open-spec-summary");
+});
+
+test("orchestration plan requests carry only bounded change identities", () => {
+  const user = { username: "alice", role: "owner" };
+  const agent = queue.updateCodexAgent({
+    id: "orchestration-plan-agent",
+    ownerUser: "alice",
+    workspaces: [{ id: "demo", path: "/tmp/demo" }],
+    runtime: {
+      plugins: {
+        capability: { canManage: true },
+        plugins: [
+          { id: "open-spec", enabled: true },
+          { id: "orchestration", enabled: true }
+        ]
+      }
+    }
+  });
+  const request = queue.createCodexFileRequest({
+    type: "orchestration-plan",
+    projectId: "demo",
+    targetAgentId: agent.id,
+    items: [{ changeId: "change-a", dependsOn: ["change-b"] }],
+    ownerUser: "alice",
+    user,
+    path: "/tmp/ignored",
+    command: "git status"
+  });
+  assert.equal(request.path, "");
+  assert.deepEqual(request.payload, {
+    path: "",
+    items: [{ changeId: "change-a", dependsOn: ["change-b"] }]
+  });
+  assert.throws(
+    () => queue.createCodexFileRequest({
+      type: "orchestration-plan",
+      projectId: "demo",
+      targetAgentId: agent.id,
+      items: [{ path: "/tmp/escape" }],
+      ownerUser: "alice",
+      user
+    }),
+    /change id/
+  );
 });
 
 test("status advertises only online agent workspaces", () => {
@@ -102,15 +444,73 @@ test("status advertises only online agent workspaces", () => {
 
   const onlineStatus = queue.codexStatus();
   const workspaceIds = onlineStatus.workspaces.map((workspace) => workspace.id).sort();
+  const workspaceKeys = onlineStatus.workspaces.map((workspace) => workspace.key).sort();
   assert.equal(onlineStatus.agentOnline, true);
-  assert.deepEqual(workspaceIds, ["echo", "metio", "side"]);
+  assert.deepEqual(workspaceIds, ["echo", "echo", "metio", "side"]);
+  assert.deepEqual(workspaceKeys, ["real-agent-a:echo", "real-agent-a:metio", "real-agent-b:echo", "real-agent-b:side"]);
   assert.equal(onlineStatus.workspaces.filter((workspace) => workspace.id === "e2e").length, 0);
+  assert.equal(new Set(onlineStatus.workspaces.filter((workspace) => workspace.id === "echo").map((workspace) => workspace.agentId)).size, 2);
+  assert.match(onlineStatus.statusUpdatedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(onlineStatus.workspacesUpdatedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(onlineStatus.runtimeUpdatedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(onlineStatus.statusVersion, /^[a-f0-9]{16}$/);
   assert.equal(onlineStatus.runtime.backendId, "codex");
   assert.equal(onlineStatus.runtime.provider, "codex");
   assert.equal(onlineStatus.runtime.backendName, "Codex");
   assert.equal(onlineStatus.runtime.command, "codex");
   assert.deepEqual(onlineStatus.runtime.unsupportedModels, ["gpt-5.5"]);
   assert.equal(onlineStatus.agents.filter((agent) => agent.online).length, 2);
+});
+
+test("agent online status tolerates one missed desktop heartbeat", () => {
+  store.resetStoreForTest();
+
+  queue.updateCodexAgent({
+    id: "heartbeat-jitter-agent",
+    workspaces: [{ id: "echo", label: "Echo", path: "/workspace/echo" }],
+    runtime: { command: "fake-codex" }
+  });
+  db.prepare("UPDATE codex_agents SET last_seen_at = ? WHERE id = ?").run(
+    new Date(Date.now() - 60 * 1000).toISOString(),
+    "heartbeat-jitter-agent"
+  );
+
+  const status = queue.codexStatus();
+  assert.equal(status.agentOnline, true);
+  assert.deepEqual(status.workspaces.map((workspace) => workspace.key), ["heartbeat-jitter-agent:echo"]);
+});
+
+test("lightweight agent updates preserve advertised workspace snapshot", () => {
+  store.resetStoreForTest();
+
+  queue.updateCodexAgent({
+    id: "snapshot-agent",
+    workspaces: [{ id: "echo", label: "Echo", path: "/workspace/echo" }],
+    runtime: { command: "fake-codex", model: "gpt-5.5" }
+  });
+
+  const firstStatus = queue.codexStatus();
+  assert.deepEqual(firstStatus.workspaces.map((workspace) => workspace.key), ["snapshot-agent:echo"]);
+  assert.equal(firstStatus.runtime.command, "fake-codex");
+
+  queue.updateCodexAgent({ id: "snapshot-agent" });
+
+  const preservedStatus = queue.codexStatus();
+  assert.equal(preservedStatus.agentOnline, true);
+  assert.deepEqual(preservedStatus.workspaces.map((workspace) => workspace.key), ["snapshot-agent:echo"]);
+  assert.equal(preservedStatus.runtime.command, "fake-codex");
+  assert.equal(preservedStatus.workspacesUpdatedAt, firstStatus.workspacesUpdatedAt);
+  assert.equal(preservedStatus.runtimeUpdatedAt, firstStatus.runtimeUpdatedAt);
+
+  queue.updateCodexAgent({
+    id: "snapshot-agent",
+    workspaces: [],
+    runtime: { command: "updated-codex" }
+  });
+
+  const clearedStatus = queue.codexStatus();
+  assert.deepEqual(clearedStatus.workspaces, []);
+  assert.equal(clearedStatus.runtime.command, "updated-codex");
 });
 
 test("relay rejects unsupported Claude attachments and compaction before queueing work", () => {
@@ -133,7 +533,7 @@ test("relay rejects unsupported Claude attachments and compaction before queuein
       }),
     (error) => {
       assert.equal(error.statusCode, 400);
-      assert.match(error.message, /截图附件/);
+      assert.match(error.message, /文件附件/);
       return true;
     }
   );
@@ -156,10 +556,14 @@ test("relay rejects unsupported Claude attachments and compaction before queuein
       }),
     (error) => {
       assert.equal(error.statusCode, 400);
-      assert.match(error.message, /截图附件/);
+      assert.match(error.message, /文件附件/);
       return true;
     }
   );
+
+  const automaticCompact = queue.compactCodexSession(created.id, { automatic: true, reason: "context-threshold" });
+  assert.equal(automaticCompact.id, created.id);
+  assert.equal(compactCommandCount(created.id), 0);
 
   assert.throws(
     () => queue.compactCodexSession(created.id, { automatic: false, reason: "manual" }),
@@ -208,18 +612,517 @@ test("interactive Codex sessions are scoped to one project", () => {
   assert.equal(continued.messages.filter((message) => message.role === "user").length, 2);
 });
 
+test("Codex status and sessions are scoped by owner user", () => {
+  store.resetStoreForTest();
+
+  const alice = { username: "alice", displayName: "Alice", role: "user" };
+  const bob = { username: "bob", displayName: "Bob", role: "user" };
+  const owner = { username: "owner", displayName: "Owner", role: "owner" };
+
+  queue.updateCodexAgent({
+    id: "alice-mac",
+    ownerUser: "alice",
+    displayName: "Alice Mac",
+    workspaces: [{ id: "echo", label: "Echo", path: "/users/alice/echo" }],
+    runtime: { command: "codex" }
+  });
+  queue.updateCodexAgent({
+    id: "bob-pc",
+    ownerUser: "bob",
+    displayName: "Bob PC",
+    workspaces: [
+      { id: "echo", label: "Echo", path: "/users/bob/echo" },
+      { id: "side", label: "Side", path: "/users/bob/side" }
+    ],
+    runtime: { command: "codex" }
+  });
+
+  const aliceStatus = queue.codexStatus({ user: alice });
+  assert.deepEqual(aliceStatus.agents.map((agent) => agent.id), ["alice-mac"]);
+  assert.deepEqual(aliceStatus.workspaces.map((workspace) => workspace.key), ["alice-mac:echo"]);
+
+  const bobStatus = queue.codexStatus({ user: bob });
+  assert.deepEqual(bobStatus.agents.map((agent) => agent.id), ["bob-pc"]);
+  assert.deepEqual(
+    bobStatus.workspaces.map((workspace) => workspace.key).sort(),
+    ["bob-pc:echo", "bob-pc:side"]
+  );
+
+  const ownerStatus = queue.codexStatus({ user: owner });
+  assert.deepEqual(
+    ownerStatus.workspaces.map((workspace) => workspace.key).sort(),
+    ["alice-mac:echo", "bob-pc:echo", "bob-pc:side"]
+  );
+
+  const aliceSession = queue.createCodexSession({
+    projectId: "echo",
+    targetAgentId: "alice-mac",
+    ownerUser: "alice",
+    user: alice,
+    prompt: "Alice task"
+  });
+  const bobSession = queue.createCodexSession({
+    projectId: "echo",
+    targetAgentId: "bob-pc",
+    ownerUser: "bob",
+    user: bob,
+    prompt: "Bob task"
+  });
+
+  assert.equal(queue.getCodexSession(aliceSession.id, { user: bob }), null);
+  assert.equal(queue.getCodexSession(bobSession.id, { user: alice }), null);
+  assert.equal(queue.getCodexSession(aliceSession.id, { user: owner })?.id, aliceSession.id);
+
+  assert.deepEqual(
+    queue.listCodexSessions(10, { projectId: "echo", targetAgentId: "alice-mac", user: alice }).map((session) => session.id),
+    [aliceSession.id]
+  );
+  assert.deepEqual(
+    queue.listCodexSessions(10, { projectId: "echo", targetAgentId: "bob-pc", user: bob }).map((session) => session.id),
+    [bobSession.id]
+  );
+  assert.deepEqual(
+    queue.listCodexSessions(10, { projectId: "echo", user: owner }).map((session) => session.id).sort(),
+    [aliceSession.id, bobSession.id].sort()
+  );
+});
+
+test("authenticated users do not see unowned legacy desktop agents", () => {
+  store.resetStoreForTest();
+
+  const alice = { username: "alice", displayName: "Alice", role: "user" };
+
+  queue.updateCodexAgent({
+    id: "legacy-agent",
+    displayName: "Legacy Agent",
+    workspaces: [{ id: "echo", label: "Echo", path: "/legacy/echo" }],
+    runtime: { command: "codex" }
+  });
+  queue.updateCodexAgent({
+    id: "alice-mac",
+    ownerUser: "alice",
+    displayName: "Alice Mac",
+    workspaces: [{ id: "alice", label: "Alice", path: "/alice/project" }],
+    runtime: { command: "codex" }
+  });
+
+  const anonymousStatus = queue.codexStatus();
+  assert.deepEqual(
+    anonymousStatus.workspaces.map((workspace) => workspace.key).sort(),
+    ["alice-mac:alice", "legacy-agent:echo"]
+  );
+  const legacySession = queue.createCodexSession({
+    projectId: "echo",
+    targetAgentId: "legacy-agent",
+    prompt: "Legacy unowned task"
+  });
+
+  const aliceStatus = queue.codexStatus({ user: alice });
+  assert.deepEqual(aliceStatus.agents.map((agent) => agent.id), ["alice-mac"]);
+  assert.deepEqual(aliceStatus.workspaces.map((workspace) => workspace.key), ["alice-mac:alice"]);
+  assert.equal(queue.getCodexSession(legacySession.id, { user: alice }), null);
+  assert.deepEqual(queue.listCodexSessions(10, { user: alice }).map((session) => session.id), []);
+
+  assert.throws(
+    () =>
+      queue.createCodexSession({
+        projectId: "echo",
+        targetAgentId: "legacy-agent",
+        ownerUser: "alice",
+        user: alice,
+        prompt: "This should not reach an unowned agent"
+      }),
+    (error) => {
+      assert.equal(error.statusCode, 409);
+      assert.match(error.message, /Desktop agent is not online/);
+      return true;
+    }
+  );
+});
+
+test("target agent identity scopes session, file, and workspace leases", () => {
+  store.resetStoreForTest();
+
+  const alice = { username: "alice", displayName: "Alice", role: "user" };
+  const bob = { username: "bob", displayName: "Bob", role: "user" };
+  const agentA = {
+    id: "agent-a",
+    ownerUser: "alice",
+    workspaces: [{ id: "echo", label: "Echo", path: "/agent-a/echo" }],
+    runtime: {
+      command: "fake-codex",
+      plugins: {
+        capability: { canManage: true },
+        plugins: [{ id: "open-spec", enabled: true }]
+      }
+    }
+  };
+  const agentB = {
+    id: "agent-b",
+    ownerUser: "bob",
+    workspaces: [{ id: "echo", label: "Echo", path: "/agent-b/echo" }],
+    runtime: { command: "fake-codex" }
+  };
+  queue.updateCodexAgent(agentA);
+  queue.updateCodexAgent(agentB);
+
+  const session = queue.createCodexSession({
+    projectId: "echo",
+    targetAgentId: "agent-a",
+    ownerUser: "alice",
+    user: alice,
+    prompt: "Run on Alice's machine"
+  });
+
+  assert.equal(store.acquireNextSessionCommand({ agentId: "agent-b", workspaces: agentB.workspaces }), null);
+  const startCommand = store.acquireNextSessionCommand({ agentId: "agent-a", workspaces: agentA.workspaces });
+  assert.equal(startCommand?.sessionId, session.id);
+
+  const fileRequest = queue.createCodexFileRequest({
+    type: "list",
+    projectId: "echo",
+    targetAgentId: "agent-a",
+    ownerUser: "alice",
+    requestedBy: "alice",
+    user: alice
+  });
+  assert.equal(store.acquireNextFileRequest({ agentId: "agent-b", workspaces: agentB.workspaces }), null);
+  const leasedFileRequest = store.acquireNextFileRequest({ agentId: "agent-a", workspaces: agentA.workspaces });
+  assert.equal(leasedFileRequest?.id, fileRequest.id);
+  assert.equal(leasedFileRequest?.targetAgentId, "agent-a");
+
+  const openSpecRequest = queue.createCodexFileRequest({
+    type: "open-spec-summary",
+    projectId: "echo",
+    targetAgentId: "agent-a",
+    ownerUser: "alice",
+    requestedBy: "alice",
+    user: alice,
+    path: "../outside",
+    maxChanges: 999,
+    maxSpecs: 999
+  });
+  assert.equal(openSpecRequest.path, "");
+  assert.equal(openSpecRequest.payload.path, "");
+  assert.equal(openSpecRequest.payload.maxChanges, 200);
+  assert.equal(openSpecRequest.payload.maxSpecs, 240);
+  assert.equal(store.acquireNextFileRequest({ agentId: "agent-b", workspaces: agentB.workspaces }), null);
+  const leasedOpenSpecRequest = store.acquireNextFileRequest({ agentId: "agent-a", workspaces: agentA.workspaces });
+  assert.equal(leasedOpenSpecRequest?.id, openSpecRequest.id);
+  assert.equal(leasedOpenSpecRequest?.type, "open-spec-summary");
+  assert.equal(leasedOpenSpecRequest?.path, "");
+  assert.equal(leasedOpenSpecRequest?.payload.path, "");
+  assert.equal(leasedOpenSpecRequest?.targetAgentId, "agent-a");
+
+  assert.throws(
+    () =>
+      queue.createCodexFileRequest({
+        type: "open-spec-summary",
+        projectId: "echo",
+        targetAgentId: "agent-b",
+        ownerUser: "alice",
+        requestedBy: "alice",
+        user: alice
+      }),
+    (error) => {
+      assert.equal(error.statusCode, 409);
+      assert.match(error.message, /Desktop agent is not online/);
+      return true;
+    }
+  );
+
+  assert.throws(
+    () =>
+      queue.createCodexWorkspace({
+        name: "other-user-workspace",
+        targetAgentId: "agent-b",
+        ownerUser: "alice",
+        requestedBy: "alice",
+        user: alice
+      }),
+    (error) => {
+      assert.equal(error.statusCode, 409);
+      assert.match(error.message, /Desktop agent is not online/);
+      return true;
+    }
+  );
+
+  const workspaceCommand = queue.createCodexWorkspace({
+    name: "alice-workspace",
+    targetAgentId: "agent-a",
+    ownerUser: "alice",
+    requestedBy: "alice",
+    user: alice
+  });
+  assert.equal(store.acquireNextWorkspaceCommand({ agentId: "agent-b" }), null);
+  const leasedWorkspaceCommand = store.acquireNextWorkspaceCommand({ agentId: "agent-a" });
+  assert.equal(leasedWorkspaceCommand?.id, workspaceCommand.id);
+  assert.equal(leasedWorkspaceCommand?.targetAgentId, "agent-a");
+
+  const ownerWorkspaceCommand = queue.createCodexWorkspace({
+    name: "owner-managed-bob-workspace",
+    targetAgentId: "agent-b",
+    ownerUser: "owner",
+    requestedBy: "owner",
+    user: { username: "owner", role: "owner" }
+  });
+  assert.equal(store.acquireNextWorkspaceCommand({ agentId: "agent-b" })?.id, ownerWorkspaceCommand.id);
+});
+
+test("ambiguous duplicate workspace ids require an explicit target agent", () => {
+  store.resetStoreForTest();
+
+  const owner = { username: "owner", role: "owner" };
+  queue.updateCodexAgent({
+    id: "desk-a",
+    ownerUser: "owner",
+    workspaces: [{ id: "echo", label: "Echo", path: "/desk-a/echo" }],
+    runtime: { command: "fake-codex" }
+  });
+  queue.updateCodexAgent({
+    id: "desk-b",
+    ownerUser: "owner",
+    workspaces: [{ id: "echo", label: "Echo", path: "/desk-b/echo" }],
+    runtime: { command: "fake-codex" }
+  });
+
+  assert.throws(
+    () =>
+      queue.createCodexSession({
+        projectId: "echo",
+        ownerUser: "owner",
+        user: owner,
+        prompt: "Run on whichever desktop"
+      }),
+    (error) => {
+      assert.equal(error.statusCode, 409);
+      assert.match(error.message, /Multiple desktop environments/);
+      return true;
+    }
+  );
+
+  assert.throws(
+    () =>
+      queue.createCodexFileRequest({
+        type: "list",
+        projectId: "echo",
+        ownerUser: "owner",
+        requestedBy: "owner",
+        user: owner
+      }),
+    (error) => {
+      assert.equal(error.statusCode, 409);
+      assert.match(error.message, /Multiple desktop environments/);
+      return true;
+    }
+  );
+
+  const targeted = queue.createCodexSession({
+    projectId: "echo",
+    targetAgentId: "desk-b",
+    ownerUser: "owner",
+    user: owner,
+    prompt: "Run on desk B"
+  });
+  assert.equal(targeted.targetAgentId, "desk-b");
+});
+
+test("attachments, approvals, and archive actions honor session ownership", () => {
+  store.resetStoreForTest();
+
+  const alice = { username: "alice", displayName: "Alice", role: "user" };
+  const bob = { username: "bob", displayName: "Bob", role: "user" };
+  const agent = {
+    id: "alice-agent",
+    ownerUser: "alice",
+    workspaces: [{ id: "echo", label: "Echo", path: "/alice/echo" }],
+    runtime: { command: "fake-codex" }
+  };
+  queue.updateCodexAgent(agent);
+
+  const session = queue.createCodexSession({
+    projectId: "echo",
+    targetAgentId: agent.id,
+    ownerUser: "alice",
+    user: alice,
+    prompt: "Review this screenshot",
+    attachments: [{ type: "image", url: "data:image/png;base64,AAAA", name: "screen.png", mimeType: "image/png", sizeBytes: 4 }]
+  });
+  const detail = queue.getCodexSession(session.id, { user: alice });
+  const attachmentId = detail.messages[0].attachments[0].id;
+  assert.equal(queue.getCodexSessionAttachmentContent(attachmentId, { user: bob }), null);
+  assert.equal(queue.getCodexSessionAttachmentContent(attachmentId, { user: bob, agentId: "other-agent" }), null);
+  assert.equal(queue.getCodexSessionAttachmentContent(attachmentId, { user: bob, agentId: agent.id })?.id, attachmentId);
+  assert.equal(queue.getCodexSessionAttachmentContent(attachmentId, { user: alice })?.id, attachmentId);
+
+  const startCommand = store.acquireNextSessionCommand({ agentId: agent.id, workspaces: agent.workspaces });
+  assert.equal(startCommand?.sessionId, session.id);
+  const approval = queue.createCodexSessionApproval(
+    {
+      sessionId: session.id,
+      appRequestId: "approval-owner-scope",
+      method: "shell",
+      prompt: "Run a command?",
+      payload: { command: "pnpm test" }
+    },
+    { agentId: agent.id }
+  );
+
+  assert.throws(
+    () => queue.decideCodexSessionApproval(approval.id, { sessionId: session.id, decision: "approved" }, { user: bob }),
+    /Approval not found/
+  );
+  assert.equal(
+    queue.decideCodexSessionApproval(approval.id, { sessionId: session.id, decision: "approved" }, { user: alice }).status,
+    "approved"
+  );
+
+  assert.equal(queue.completeCodexSessionCommand(startCommand.id, { ok: true, sessionStatus: "active" }, { agentId: agent.id }), true);
+  assert.throws(
+    () => queue.archiveCodexSession(session.id, { archived: true, user: bob }),
+    /Session not found/
+  );
+  assert.equal(queue.archiveCodexSession(session.id, { archived: true, user: alice }).archivedAt.length > 0, true);
+});
+
+test("per-user storage quota blocks writes and owner data deletion cleans files", () => {
+  store.resetStoreForTest();
+  authStore.resetAuthStoreForTest();
+
+  const alice = { username: "alice", displayName: "Alice", role: "user" };
+  const agent = {
+    id: "quota-agent",
+    ownerUser: "alice",
+    workspaces: [{ id: "echo", label: "Echo", path: "/alice/echo" }],
+    runtime: { command: "fake-codex" }
+  };
+  queue.updateCodexAgent(agent);
+
+  authStore.setStorageQuota("alice", 3);
+  assert.throws(
+    () =>
+      queue.createCodexSession({
+        projectId: "echo",
+        targetAgentId: agent.id,
+        ownerUser: "alice",
+        user: alice,
+        prompt: "too large",
+        attachments: [{ type: "image", url: "data:image/png;base64,AAAA", name: "screen.png", mimeType: "image/png", sizeBytes: 4 }]
+      }),
+    /Storage quota exceeded/
+  );
+
+  authStore.setStorageQuota("alice", 1024 * 1024);
+  const session = queue.createCodexSession({
+    projectId: "echo",
+    targetAgentId: agent.id,
+    ownerUser: "alice",
+    user: alice,
+    prompt: "within quota",
+    attachments: [{ type: "image", url: "data:image/png;base64,AAAA", name: "screen.png", mimeType: "image/png", sizeBytes: 4 }]
+  });
+  const attachmentId = queue.getCodexSession(session.id, { user: alice }).messages[0].attachments[0].id;
+  const attachmentPath = queue.getCodexSessionAttachmentContent(attachmentId, { user: alice }).filePath;
+  assert.equal(fs.existsSync(attachmentPath), true);
+
+  const startCommand = store.acquireNextSessionCommand({ agentId: agent.id, workspaces: agent.workspaces });
+  assert.equal(startCommand.sessionId, session.id);
+  const pngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      session.id,
+      [
+        {
+          type: "item/completed",
+          text: "image",
+          raw: {
+            method: "item/completed",
+            params: {
+              item: {
+                id: "quota-image",
+                type: "agentMessage",
+                content: [{ type: "image_url", image_url: { url: `data:image/png;base64,${pngBase64}` } }]
+              }
+            }
+          }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+  const artifactId = queue.getCodexSession(session.id, { user: alice }).artifacts[0].id;
+  const artifactPath = queue.getCodexSessionArtifactContent(artifactId, { user: alice }).filePath;
+  assert.equal(fs.existsSync(artifactPath), true);
+  assert.equal(queue.codexOwnerStorageUsage("alice").totalBytes > 4, true);
+
+  const deleted = queue.deleteCodexOwnerData("alice");
+  assert.equal(deleted.deleted.sessions, 1);
+  assert.equal(deleted.deleted.attachments, 1);
+  assert.equal(deleted.deleted.artifacts, 1);
+  assert.equal(queue.getCodexSession(session.id, { user: alice }), null);
+  assert.equal(fs.existsSync(attachmentPath), false);
+  assert.equal(fs.existsSync(artifactPath), false);
+});
+
+test("multi-user command leasing stays isolated under concurrent queue pressure", async () => {
+  store.resetStoreForTest();
+
+  const users = Array.from({ length: 12 }, (_, index) => {
+    const n = index + 1;
+    return {
+      username: `user${n}`,
+      agentId: `agent-${n}`,
+      workspaceId: `project-${n}`,
+      path: `/users/user${n}/project`
+    };
+  });
+
+  await Promise.all(
+    users.flatMap((entry) =>
+      Array.from({ length: 3 }, async (_, index) => {
+        queue.updateCodexAgent({
+          id: entry.agentId,
+          ownerUser: entry.username,
+          workspaces: [{ id: entry.workspaceId, label: entry.workspaceId, path: entry.path }],
+          runtime: { command: "fake-codex" }
+        });
+        return queue.createCodexSession({
+          projectId: entry.workspaceId,
+          targetAgentId: entry.agentId,
+          ownerUser: entry.username,
+          user: { username: entry.username, role: "user" },
+          prompt: `task ${index + 1}`
+        });
+      })
+    )
+  );
+
+  for (const entry of users) {
+    const agent = { agentId: entry.agentId, workspaces: [{ id: entry.workspaceId, path: entry.path }] };
+    const leased = [];
+    for (;;) {
+      const command = store.acquireNextSessionCommand(agent);
+      if (!command) break;
+      leased.push(command);
+      const session = queue.getCodexSession(command.sessionId, { user: { username: entry.username, role: "user" } });
+      assert.equal(session.ownerUser, entry.username);
+      assert.equal(session.targetAgentId, entry.agentId);
+    }
+    assert.equal(leased.length, 3);
+  }
+
+  assert.equal(queue.listCodexSessions(100, { user: { username: "user1", role: "user" } }).length, 3);
+  assert.equal(queue.listCodexSessions(100, { user: { username: "owner", role: "owner" } }).length, 36);
+});
+
 test("quick skills include globals and current project skills only", () => {
   store.resetStoreForTest();
 
   const defaults = queue.listCodexQuickSkills({ projectId: "echo" });
   assert.equal(defaults.some((skill) => skill.id === "builtin.quick-deploy" && skill.scope === "global"), true);
-  const quickPushSkill = defaults.find((skill) => skill.id === "builtin.quick-deploy");
-  assert.equal(quickPushSkill?.title, "提交推送");
-  assert.equal(quickPushSkill?.description, "提交当前结果并推送到合适的远端分支。");
-  assert.match(quickPushSkill?.prompt || "", /提交并推送/);
-  assert.doesNotMatch(quickPushSkill?.prompt || "", /Actions|workflow/);
   assert.equal(defaults.some((skill) => skill.id === "builtin.echo-relay-deploy"), false);
-  assert.equal(queue.listCodexQuickSkills({ projectId: "metio" }).some((skill) => skill.id === "builtin.echo-relay-deploy"), false);
 
   const globalSkill = queue.createCodexQuickSkill({
     scope: "global",
@@ -231,9 +1134,17 @@ test("quick skills include globals and current project skills only", () => {
   const echoSkill = queue.createCodexQuickSkill({
     scope: "project",
     projectId: "echo",
+    targetAgentId: "agent-a",
     title: "Echo 发布检查",
     prompt: "请按 Echo 的发布前检查清单执行。",
     requiresSession: true
+  });
+  const otherEchoSkill = queue.createCodexQuickSkill({
+    scope: "project",
+    projectId: "echo",
+    targetAgentId: "agent-b",
+    title: "Echo B 发布检查",
+    prompt: "请按 Echo B 的发布前检查清单执行。"
   });
   queue.createCodexQuickSkill({
     scope: "project",
@@ -242,10 +1153,12 @@ test("quick skills include globals and current project skills only", () => {
     prompt: "请按 Metio 的发布前检查清单执行。"
   });
 
-  const echoSkills = queue.listCodexQuickSkills({ projectId: "echo" });
+  const echoSkills = queue.listCodexQuickSkills({ projectId: "echo", targetAgentId: "agent-a" });
   assert.equal(echoSkills.some((skill) => skill.id === globalSkill.id && skill.scope === "global" && skill.mode === "plan"), true);
-  assert.equal(echoSkills.some((skill) => skill.id === echoSkill.id && skill.requiresSession), true);
+  assert.equal(echoSkills.some((skill) => skill.id === echoSkill.id && skill.requiresSession && skill.targetAgentId === "agent-a"), true);
+  assert.equal(echoSkills.some((skill) => skill.id === otherEchoSkill.id), false);
   assert.equal(echoSkills.some((skill) => skill.projectId === "metio"), false);
+  assert.equal(queue.listCodexQuickSkills({ projectId: "echo", targetAgentId: "agent-b" }).some((skill) => skill.id === otherEchoSkill.id), true);
 
   const updated = queue.updateCodexQuickSkill(echoSkill.id, {
     scope: "project",
@@ -319,6 +1232,222 @@ test("session delta batches append to the visible assistant draft", async () => 
   assert.equal(streamSnapshot.events[0].raw.params.delta, undefined);
   assert.equal(streamSnapshot.events[1].raw.params.delta, undefined);
   assert.equal(streamSnapshot.finalMessage, "Hello from Echo");
+});
+
+test("session events redact known sensitive keys and enforce a serialized size boundary", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "bounded-event-agent",
+    workspaces: [{ id: "echo", label: "Echo", path: "/workspace/echo" }],
+    runtime: { command: "fake-codex" }
+  };
+  queue.updateCodexAgent(agent);
+  const created = queue.createCodexSession({ projectId: "echo", prompt: "store a bounded event" });
+  await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+
+  const secretValues = ["Bearer relay-secret-value", "cookie-secret-value", "token-secret-value", "env-secret-value"];
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      created.id,
+      [
+        {
+          type: "turn/completed",
+          text: "Turn completed.",
+          sessionStatus: "active",
+          clearActiveTurnId: true,
+          raw: {
+            method: "turn/completed",
+            authorization: secretValues[0],
+            headers: { cookie: secretValues[1] },
+            nested: [{ apiKey: secretValues[2] }, { env: { PRIVATE_VALUE: secretValues[3] } }],
+            oversized: "x".repeat(120000),
+            params: {
+              threadId: "thr_bounded",
+              turn: { id: "turn_bounded", status: "completed" }
+            }
+          }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+
+  const row = db.prepare(`
+    SELECT type, text, raw_json AS rawJson
+    FROM codex_session_events
+    WHERE session_id = ? AND type = 'turn/completed'
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(created.id);
+  const storedBytes = Buffer.byteLength(JSON.stringify({ type: row.type, text: row.text, raw: JSON.parse(row.rawJson) }), "utf8");
+  assert.ok(storedBytes <= 64 * 1024);
+  for (const secret of secretValues) assert.equal(row.rawJson.includes(secret), false);
+
+  const detail = queue.getCodexSession(created.id, { rawMode: "client", includeMessages: false });
+  const event = detail.events.find((item) => item.type === "turn/completed");
+  assert.equal(event.raw.redacted, true);
+  assert.equal(event.raw.truncated, true);
+  assert.equal(event.raw.params.turn.id, "turn_bounded");
+  assert.equal(event.raw.params.turn.status, "completed");
+  assert.equal(detail.status, "active");
+  assert.equal(detail.artifactCount, 0);
+});
+
+test("session deltas reset the visible assistant draft for a new turn", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "session-agent",
+    workspaces: [{ id: "echo", label: "Echo", path: "/workspace/echo" }],
+    runtime: { command: "fake-codex" }
+  };
+  queue.updateCodexAgent(agent);
+  const created = queue.createCodexSession({
+    projectId: "echo",
+    prompt: "first question"
+  });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(startCommand.sessionId, created.id);
+
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      created.id,
+      [
+        {
+          type: "turn/started",
+          text: "Turn started.",
+          raw: { method: "turn/started", params: { threadId: "thr_1", turn: { id: "turn_1" } } }
+        },
+        {
+          type: "item/agentMessage/delta",
+          text: "First draft",
+          finalMessage: "First draft",
+          raw: { method: "item/agentMessage/delta", params: { threadId: "thr_1", turnId: "turn_1", delta: "First draft" } }
+        },
+        {
+          type: "item/completed",
+          text: "First answer",
+          finalMessage: "First answer",
+          raw: {
+            method: "item/completed",
+            params: { threadId: "thr_1", turnId: "turn_1", item: { id: "msg_1", type: "agentMessage", text: "First answer" } }
+          }
+        },
+        {
+          type: "turn/completed",
+          text: "Turn completed.",
+          raw: { method: "turn/completed", params: { threadId: "thr_1", turn: { id: "turn_1", status: "completed" } } }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+  assert.equal(queue.completeCodexSessionCommand(startCommand.id, { ok: true, appThreadId: "thr_1", sessionStatus: "active" }, { agentId: agent.id }), true);
+  assert.equal(queue.getCodexSession(created.id).finalMessage, "First answer");
+
+  queue.enqueueCodexSessionMessage(created.id, { text: "second question" });
+  const messageCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(messageCommand.type, "message");
+
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      created.id,
+      [
+        {
+          type: "turn/started",
+          text: "Turn started.",
+          raw: { method: "turn/started", params: { threadId: "thr_1", turn: { id: "turn_2" } } }
+        },
+        {
+          type: "item/agentMessage/delta",
+          text: "Second ",
+          finalMessage: "Second ",
+          raw: { method: "item/agentMessage/delta", params: { threadId: "thr_1", turnId: "turn_2", delta: "Second " } }
+        },
+        {
+          type: "item/agentMessage/delta",
+          text: "draft",
+          finalMessage: "draft",
+          raw: { method: "item/agentMessage/delta", params: { threadId: "thr_1", turnId: "turn_2", delta: "draft" } }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+
+  assert.equal(queue.getCodexSession(created.id).finalMessage, "Second draft");
+});
+
+test("late deltas from a completed turn do not replace the visible assistant draft", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "session-agent",
+    workspaces: [{ id: "echo", label: "Echo", path: "/workspace/echo" }],
+    runtime: { command: "fake-codex" }
+  };
+  queue.updateCodexAgent(agent);
+  const created = queue.createCodexSession({
+    projectId: "echo",
+    prompt: "first question"
+  });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      created.id,
+      [
+        {
+          type: "turn/started",
+          text: "Turn started.",
+          raw: { method: "turn/started", params: { threadId: "thr_1", turn: { id: "turn_1" } } }
+        },
+        {
+          type: "item/completed",
+          text: "First answer",
+          finalMessage: "First answer",
+          raw: {
+            method: "item/completed",
+            params: { threadId: "thr_1", turnId: "turn_1", item: { id: "msg_1", type: "agentMessage", text: "First answer" } }
+          }
+        },
+        {
+          type: "turn/completed",
+          text: "Turn completed.",
+          raw: { method: "turn/completed", params: { threadId: "thr_1", turn: { id: "turn_1", status: "completed" } } }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+  assert.equal(queue.completeCodexSessionCommand(startCommand.id, { ok: true, appThreadId: "thr_1", sessionStatus: "active" }, { agentId: agent.id }), true);
+  assert.equal(queue.getCodexSession(created.id).finalMessage, "First answer");
+
+  queue.enqueueCodexSessionMessage(created.id, { text: "second question" });
+  await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      created.id,
+      [
+        {
+          type: "item/agentMessage/delta",
+          text: " stale old tail",
+          finalMessage: " stale old tail",
+          raw: { method: "item/agentMessage/delta", params: { threadId: "thr_1", turnId: "turn_1", delta: " stale old tail" } }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+
+  assert.equal(queue.getCodexSession(created.id).finalMessage, "First answer");
 });
 
 test("session token usage events expose official context usage", async () => {
@@ -395,6 +1524,105 @@ test("session token usage events expose official context usage", async () => {
 
   const summary = queue.listCodexSessions(10, { projectId: "echo" })[0];
   assert.equal(summary.contextUsage.last.totalTokens, 32000);
+});
+
+test("session context usage ignores stale token usage after compaction", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "session-agent",
+    workspaces: [{ id: "echo", label: "Echo", path: "/workspace/echo" }],
+    runtime: { command: "fake-codex" }
+  };
+  queue.updateCodexAgent(agent);
+  const created = queue.createCodexSession({
+    projectId: "echo",
+    prompt: "measure context before compaction"
+  });
+  const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(command.sessionId, created.id);
+
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      created.id,
+      [
+        {
+          type: "thread/tokenUsage/updated",
+          text: "Context usage updated.",
+          raw: {
+            method: "thread/tokenUsage/updated",
+            params: {
+              threadId: "thr_usage_reset",
+              turnId: "turn_before_compact",
+              tokenUsage: {
+                total: { totalTokens: 118000 },
+                last: { totalTokens: 112000 },
+                modelContextWindow: 128000
+              }
+            }
+          }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+
+  assert.equal(queue.getCodexSession(created.id, { includeMessages: false }).contextUsage.last.totalTokens, 112000);
+
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      created.id,
+      [
+        {
+          type: "item/completed",
+          text: "Context compaction completed.",
+          raw: {
+            method: "item/completed",
+            params: {
+              threadId: "thr_usage_reset",
+              item: { type: "contextCompaction", id: "ctx_usage_reset" }
+            }
+          }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+
+  assert.equal(queue.getCodexSession(created.id, { includeMessages: false }).contextUsage, null);
+  assert.equal(queue.listCodexSessions(10, { projectId: "echo" })[0].contextUsage, null);
+
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      created.id,
+      [
+        {
+          type: "thread/tokenUsage/updated",
+          text: "Context usage updated.",
+          raw: {
+            method: "thread/tokenUsage/updated",
+            params: {
+              threadId: "thr_usage_reset",
+              turnId: "turn_after_compact",
+              tokenUsage: {
+                total: { totalTokens: 14000 },
+                last: { totalTokens: 9000 },
+                modelContextWindow: 128000
+              }
+            }
+          }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+
+  const detail = queue.getCodexSession(created.id, { includeMessages: false });
+  assert.equal(detail.contextUsage.turnId, "turn_after_compact");
+  assert.equal(detail.contextUsage.last.totalTokens, 9000);
 });
 
 test("Echo-native context usage events are exposed from non-Codex backends", async () => {
@@ -542,6 +1770,53 @@ test("large command outputs are stored as session artifacts", async () => {
   assert.equal(fs.readFileSync(content.filePath, "utf8"), output);
 });
 
+test("client file-change events expose bounded transcript metadata without patch bodies", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "file-change-agent",
+    workspaces: [{ id: "echo", label: "Echo", path: "/workspace/echo" }],
+    runtime: { command: "fake-codex" }
+  };
+  queue.updateCodexAgent(agent);
+  const created = queue.createCodexSession({ projectId: "echo", prompt: "edit files" });
+  const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(command.sessionId, created.id);
+
+  const changes = Array.from({ length: 24 }, (_, index) => ({
+    path: `src/file-${index}.js`,
+    changeType: index === 0 ? "added" : "modified",
+    patch: `secret patch ${index}`
+  }));
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      created.id,
+      [
+        {
+          type: "item/completed",
+          text: "File change completed.",
+          raw: {
+            method: "item/completed",
+            params: {
+              threadId: "thr_file_change",
+              turnId: "turn_file_change",
+              item: { id: "files-1", type: "fileChange", status: "completed", changes }
+            }
+          }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+
+  const detail = queue.getCodexSession(created.id, { rawMode: "client", includeMessages: false });
+  const event = detail.events.find((item) => item.type === "item/completed");
+  assert.equal(event.raw.params.item.changes.length, 20);
+  assert.deepEqual(event.raw.params.item.changes[0], { path: "src/file-0.js", changeType: "added" });
+  assert.equal(JSON.stringify(event.raw).includes("secret patch"), false);
+});
+
 test("assistant inline images are stored as image artifacts", async () => {
   store.resetStoreForTest();
 
@@ -608,6 +1883,76 @@ test("assistant inline images are stored as image artifacts", async () => {
   assert.equal(JSON.stringify(event.raw).includes(pngBase64), false);
   assert.equal(detail.artifactCount, 1);
   assert.equal(detail.artifacts[0].mimeType, "image/png");
+
+  const content = queue.getCodexSessionArtifactContent(imageArtifact.id);
+  assert.equal(content.mimeType, "image/png");
+  assert.deepEqual(fs.readFileSync(content.filePath), Buffer.from(pngBase64, "base64"));
+});
+
+test("assistant local image payloads from desktop are stored as image artifacts", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "assistant-local-image-agent",
+    workspaces: [{ id: "echo", path: process.cwd() }],
+    runtime: { command: "fake-codex" }
+  };
+  queue.updateCodexAgent(agent);
+
+  const created = queue.createCodexSession({
+    projectId: "echo",
+    prompt: "send the screenshot"
+  });
+  await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+
+  const pngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      created.id,
+      [
+        {
+          type: "item/completed",
+          text: "直接看这张：",
+          raw: {
+            method: "item/completed",
+            echoLocalImageArtifacts: [
+              {
+                source: "assistant-local-image",
+                label: "当前对话界面",
+                mimeType: "image/png",
+                dataUrl: `data:image/png;base64,${pngBase64}`
+              }
+            ],
+            params: {
+              threadId: "thr_local_image",
+              turnId: "turn_local_image",
+              item: {
+                id: "msg_local_image",
+                type: "agentMessage",
+                text: "直接看这张："
+              }
+            }
+          }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+
+  const detail = queue.getCodexSession(created.id, {
+    rawMode: "client",
+    includeMessages: false
+  });
+  const event = detail.events.find((item) => item.type === "item/completed");
+  const imageArtifact = event.raw.params.item.imageArtifacts[0];
+  assert.equal(event.text, "直接看这张：");
+  assert.ok(imageArtifact.id);
+  assert.equal(imageArtifact.kind, "assistant_image");
+  assert.equal(imageArtifact.label, "当前对话界面");
+  assert.equal(imageArtifact.mimeType, "image/png");
+  assert.equal(JSON.stringify(event.raw).includes(pngBase64), false);
 
   const content = queue.getCodexSessionArtifactContent(imageArtifact.id);
   assert.equal(content.mimeType, "image/png");
@@ -1095,8 +2440,8 @@ test("interactive Codex sessions lease commands and keep thread state", async ()
     }
   });
   assert.equal(created.status, "queued");
-  assert.equal(created.runtime.model, "gpt-5.4");
-  assert.equal(created.runtime.reasoningEffort, "high");
+  assert.equal(created.runtime.model, "");
+  assert.equal(created.runtime.reasoningEffort, "");
   assert.equal(created.runtime.profile, "approve");
   assert.equal(created.runtime.sandbox, "workspace-write");
   assert.equal(created.runtime.approvalPolicy, "on-request");
@@ -1109,8 +2454,8 @@ test("interactive Codex sessions lease commands and keep thread state", async ()
   assert.equal(startCommand.payload.attachments[0].type, "image");
   assert.equal(startCommand.payload.attachments[0].downloadPath.startsWith("/api/agent/codex/attachments/"), true);
   assert.equal(startCommand.payload.attachments[0].path, undefined);
-  assert.equal(startCommand.runtime.model, "gpt-5.4");
-  assert.equal(startCommand.runtime.reasoningEffort, "high");
+  assert.equal(startCommand.runtime.model, "");
+  assert.equal(startCommand.runtime.reasoningEffort, "");
   assert.equal(startCommand.runtime.profile, "approve");
   assert.equal(startCommand.runtime.sandbox, "workspace-write");
   assert.equal(startCommand.runtime.approvalPolicy, "on-request");
@@ -1229,8 +2574,8 @@ test("interactive Codex sessions lease commands and keep thread state", async ()
     }
   });
   assert.equal(afterMessage.pendingCommandCount, 1);
-  assert.equal(afterMessage.runtime.model, "gpt-5.3-codex");
-  assert.equal(afterMessage.runtime.reasoningEffort, "xhigh");
+  assert.equal(afterMessage.runtime.model, "");
+  assert.equal(afterMessage.runtime.reasoningEffort, "");
   assert.equal(afterMessage.runtime.profile, "strict");
   assert.equal(afterMessage.runtime.sandbox, "read-only");
   assert.equal(afterMessage.runtime.approvalPolicy, "on-request");
@@ -1243,8 +2588,8 @@ test("interactive Codex sessions lease commands and keep thread state", async ()
   assert.equal(messageCommand.payload.attachments[0].type, "image");
   assert.equal(messageCommand.payload.attachments[0].downloadPath.startsWith("/api/agent/codex/attachments/"), true);
   assert.equal(messageCommand.payload.attachments[0].path, undefined);
-  assert.equal(messageCommand.runtime.model, "gpt-5.3-codex");
-  assert.equal(messageCommand.runtime.reasoningEffort, "xhigh");
+  assert.equal(messageCommand.runtime.model, "");
+  assert.equal(messageCommand.runtime.reasoningEffort, "");
   assert.equal(messageCommand.runtime.profile, "strict");
   assert.equal(messageCommand.runtime.sandbox, "read-only");
   assert.equal(messageCommand.runtime.approvalPolicy, "on-request");
@@ -1255,30 +2600,243 @@ test("interactive Codex session heartbeats renew leased command leases", async (
 
   const agent = {
     id: "command-heartbeat-agent",
+    agentInstanceId: "command-heartbeat-instance",
     workspaces: [{ id: "demo", path: process.cwd() }]
   };
 
   const session = queue.createCodexSession({ projectId: "demo", prompt: "长时间 plan turn" });
   const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
-  db.prepare("UPDATE codex_sessions SET lease_expires_at = ? WHERE id = ?").run("2020-01-01T00:00:00.000Z", session.id);
-  db.prepare("UPDATE codex_session_commands SET lease_expires_at = ? WHERE id = ?").run(
+  db.prepare("UPDATE codex_sessions SET lease_expires_at = ?, leased_instance_id = '' WHERE id = ?").run("2020-01-01T00:00:00.000Z", session.id);
+  db.prepare("UPDATE codex_session_commands SET lease_expires_at = ?, leased_instance_id = '' WHERE id = ?").run(
     "2020-01-01T00:00:00.000Z",
     command.id
   );
 
-  assert.equal(queue.appendCodexSessionEvents(session.id, [], { agentId: agent.id }), true);
+  assert.equal(queue.appendCodexSessionEvents(session.id, [], { agentId: agent.id, agentInstanceId: agent.agentInstanceId }), true);
 
   const detail = queue.getCodexSession(session.id);
   const commandRow = db.prepare(`
-    SELECT status, leased_by AS leasedBy, lease_expires_at AS leaseExpiresAt
+    SELECT status, leased_by AS leasedBy, leased_instance_id AS leasedInstanceId, lease_expires_at AS leaseExpiresAt
     FROM codex_session_commands
     WHERE id = ?
   `).get(command.id);
   assert.equal(detail.leasedBy, agent.id);
+  assert.equal(detail.leasedInstanceId, agent.agentInstanceId);
   assert.equal(commandRow.status, "leased");
   assert.equal(commandRow.leasedBy, agent.id);
+  assert.equal(commandRow.leasedInstanceId, agent.agentInstanceId);
   assert.ok(Date.parse(commandRow.leaseExpiresAt) > Date.now());
   assert.equal(detail.events.some((event) => event.type === "command.lease.expired"), false);
+});
+
+test("interactive Codex sessions retry transient upstream failures before failing", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "upstream-retry-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: {
+      backendId: "codex",
+      provider: "codex",
+      backendName: "Codex",
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+      sandbox: "workspace-write",
+      approvalPolicy: "on-request"
+    }
+  };
+  queue.updateCodexAgent(agent);
+
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "处理一个容易限流的任务" });
+  const firstCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(firstCommand.type, "start");
+
+  assert.equal(
+    queue.completeCodexSessionCommand(
+      firstCommand.id,
+      { ok: false, error: "HTTP 429 Too Many Requests: rate limit reached for model gpt-5.4" },
+      { agentId: agent.id }
+    ),
+    true
+  );
+
+  const firstRetry = queue.getCodexSession(session.id);
+  assert.equal(firstRetry.status, "queued");
+  assert.equal(firstRetry.pendingCommandCount, 1);
+  assert.match(firstRetry.lastError, /retrying/i);
+  assert.equal(firstRetry.events.some((event) => event.type === "command.retry.scheduled"), true);
+  assert.equal(await queue.waitForCodexSessionCommand({ waitMs: 1000, agent }), null);
+
+  const firstRetryRow = sessionCommandRow(firstCommand.id);
+  assert.equal(firstRetryRow.status, "queued");
+  assert.ok(Date.parse(firstRetryRow.availableAt) > Date.now());
+  assert.equal(firstRetryRow.payload.retry.attempt, 1);
+  assert.equal(firstRetryRow.payload.retry.originalReasoningEffort, "high");
+  assert.equal(firstRetryRow.payload.retry.runtimeOverride.reasoningEffort, "high");
+
+  makeSessionCommandAvailable(firstCommand.id);
+  const secondCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(secondCommand.id, firstCommand.id);
+  assert.equal(secondCommand.runtime.retryOverride.model, "gpt-5.4");
+  assert.equal(secondCommand.runtime.retryOverride.reasoningEffort, "high");
+
+  assert.equal(
+    queue.completeCodexSessionCommand(
+      secondCommand.id,
+      { ok: false, error: "HTTP 503 Service Unavailable" },
+      { agentId: agent.id }
+    ),
+    true
+  );
+
+  const secondRetryRow = sessionCommandRow(firstCommand.id);
+  assert.equal(secondRetryRow.status, "queued");
+  assert.equal(secondRetryRow.payload.retry.attempt, 2);
+  assert.equal(secondRetryRow.payload.retry.downgradedReasoning, true);
+  assert.equal(secondRetryRow.payload.retry.runtimeOverride.reasoningEffort, "medium");
+
+  makeSessionCommandAvailable(firstCommand.id);
+  const downgradedCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(downgradedCommand.runtime.retryOverride.reasoningEffort, "medium");
+
+  queue.completeCodexSessionCommand(
+    downgradedCommand.id,
+    { ok: false, error: "HTTP 502 Bad Gateway" },
+    { agentId: agent.id }
+  );
+  assert.equal(queue.getCodexSession(session.id).status, "failed");
+  assert.equal(sessionCommandRow(firstCommand.id).status, "failed");
+});
+
+test("interactive Codex sessions retry failed turn completion events from upstream limits", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "upstream-turn-failed-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: {
+      backendId: "codex",
+      provider: "codex",
+      backendName: "Codex",
+      model: "gpt-5.4",
+      reasoningEffort: "xhigh",
+      sandbox: "workspace-write",
+      approvalPolicy: "on-request"
+    }
+  };
+  queue.updateCodexAgent(agent);
+
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "启动后上游失败" });
+  const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.appendCodexSessionEvents(
+    session.id,
+    [
+      { type: "thread.started", text: "started", appThreadId: "thr_retry", sessionStatus: "active" },
+      {
+        type: "turn/started",
+        text: "Turn started.",
+        raw: { method: "turn/started", params: { threadId: "thr_retry", turn: { id: "turn_retry" } } }
+      },
+      {
+        type: "turn/completed",
+        text: "Turn failed: 429 Too Many Requests",
+        raw: {
+          method: "turn/completed",
+          params: {
+            threadId: "thr_retry",
+            turn: {
+              id: "turn_retry",
+              status: "failed",
+              error: { message: "429 Too Many Requests: rate limit reached for model gpt-5.4" }
+            }
+          }
+        }
+      }
+    ],
+    { agentId: agent.id }
+  );
+
+  queue.completeCodexSessionCommand(
+    command.id,
+    { ok: true, appThreadId: "thr_retry", activeTurnId: "turn_retry", sessionStatus: "running" },
+    { agentId: agent.id }
+  );
+
+  const retried = queue.getCodexSession(session.id);
+  assert.equal(retried.status, "queued");
+  assert.equal(retried.activeTurnId, null);
+  assert.equal(retried.pendingCommandCount, 1);
+  assert.equal(sessionCommandRow(command.id).payload.retry.runtimeOverride.reasoningEffort, "xhigh");
+});
+
+test("interactive Codex sessions retry late upstream failure events after command completion", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "late-upstream-turn-failed-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: {
+      backendId: "codex",
+      provider: "codex",
+      backendName: "Codex",
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+      sandbox: "workspace-write",
+      approvalPolicy: "on-request"
+    }
+  };
+  queue.updateCodexAgent(agent);
+
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "上游容量满时自动重试" });
+  const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(command.type, "start");
+
+  assert.equal(
+    queue.completeCodexSessionCommand(
+      command.id,
+      { ok: true, appThreadId: "thr_late_retry", activeTurnId: "turn_late_retry", sessionStatus: "running" },
+      { agentId: agent.id }
+    ),
+    true
+  );
+  assert.equal(sessionCommandRow(command.id).status, "done");
+
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      session.id,
+      [
+        {
+          type: "turn/completed",
+          text: "Turn failed: Selected model is at capacity.",
+          raw: {
+            method: "turn/completed",
+            params: {
+              threadId: "thr_late_retry",
+              turn: {
+                id: "turn_late_retry",
+                status: "failed",
+                error: { message: "Selected model is at capacity. Please try a different model.", codexErrorInfo: "serverOverloaded" }
+              }
+            }
+          }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+
+  const retried = queue.getCodexSession(session.id);
+  assert.equal(retried.status, "queued");
+  assert.equal(retried.activeTurnId, null);
+  assert.match(retried.lastError, /retrying/i);
+  assert.equal(retried.events.some((event) => event.type === "command.retry.scheduled"), true);
+
+  const retriedCommand = sessionCommandRow(command.id);
+  assert.equal(retriedCommand.status, "queued");
+  assert.equal(retriedCommand.payload.retry.attempt, 1);
+  assert.equal(retriedCommand.payload.retry.runtimeOverride.model, "gpt-5.4");
+  assert.equal(retriedCommand.payload.retry.runtimeOverride.reasoningEffort, "high");
 });
 
 test("interactive Codex leasing allows parallel sessions without re-entering one session command", async () => {
@@ -1369,7 +2927,19 @@ test("interactive Codex busy desktop hints protect active checkouts but allow is
     workspaces: [{ id: "demo", path: process.cwd() }],
     runtime: { worktreeMode: "optional", sandbox: "workspace-write", approvalPolicy: "on-request" }
   };
-  const isolated = queue.createCodexSession({ projectId: "demo", prompt: "change demo in isolation" });
+  queue.createCodexSession({ projectId: "demo", prompt: "change demo without opt-in" });
+  const blockedOptionalDefault = await queue.waitForCodexSessionCommand({
+    waitMs: 1000,
+    agent: worktreeAgent,
+    busyProjectIds: ["demo"]
+  });
+  assert.equal(blockedOptionalDefault, null);
+
+  const isolated = queue.createCodexSession({
+    projectId: "demo",
+    prompt: "change demo in isolation",
+    runtime: { worktreeMode: "always" }
+  });
   const isolatedCommand = await queue.waitForCodexSessionCommand({
     waitMs: 1000,
     agent: worktreeAgent,
@@ -1377,6 +2947,207 @@ test("interactive Codex busy desktop hints protect active checkouts but allow is
   });
   assert.equal(isolatedCommand.sessionId, isolated.id);
   assert.equal(isolatedCommand.runtime.worktreeMode, "always");
+});
+
+test("interactive Codex follow-ups reuse persisted session worktree execution", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "worktree-reuse-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: { worktreeMode: "optional", sandbox: "workspace-write", approvalPolicy: "on-request" }
+  };
+  const execution = {
+    mode: "worktree",
+    lifecycleState: "completed",
+    sessionId: "",
+    baseWorkspaceId: "demo",
+    basePath: process.cwd(),
+    path: path.join(tempHome, ".echo-voice", "worktrees", "demo", "session-reuse"),
+    branchName: "echo/job-sessionreuse",
+    baseBranch: "main",
+    baseCommit: "abc123"
+  };
+
+  const session = queue.createCodexSession({
+    projectId: "demo",
+    prompt: "start isolated",
+    runtime: { worktreeMode: "always" }
+  });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(startCommand.runtime.worktreeMode, "always");
+  queue.completeCodexSessionCommand(
+    startCommand.id,
+    {
+      ok: true,
+      appThreadId: "thr_worktree_reuse",
+      sessionStatus: "active",
+      execution: { ...execution, sessionId: session.id }
+    },
+    { agentId: agent.id }
+  );
+
+  const completed = queue.getCodexSession(session.id);
+  assert.equal(completed.execution.path, execution.path);
+  assert.equal(completed.execution.lifecycleState, "completed");
+
+  queue.enqueueCodexSessionMessage(session.id, { text: "reuse the same isolated checkout" });
+  const messageCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(messageCommand.type, "message");
+  assert.equal(messageCommand.execution.path, execution.path);
+  assert.equal(messageCommand.execution.lifecycleState, "completed");
+  assert.equal(messageCommand.runtime.worktreeMode, "always");
+});
+
+test("interactive Codex makes repeated terminal worktree actions idempotent", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "closed-worktree-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: { worktreeMode: "optional", sandbox: "workspace-write", approvalPolicy: "on-request" }
+  };
+
+  const session = queue.createCodexSession({
+    projectId: "demo",
+    prompt: "apply isolated",
+    runtime: { worktreeMode: "always" }
+  });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.completeCodexSessionCommand(
+    startCommand.id,
+    {
+      ok: true,
+      appThreadId: "thr_closed_worktree",
+      sessionStatus: "active",
+      execution: {
+        mode: "worktree",
+        lifecycleState: "applied",
+        cleanupState: "applied",
+        sessionId: session.id,
+        baseWorkspaceId: "demo",
+        basePath: process.cwd(),
+        path: path.join(tempHome, ".echo-voice", "worktrees", "demo", "session-applied"),
+        branchName: "echo/job-sessionapplied"
+      }
+    },
+    { agentId: agent.id }
+  );
+
+  assert.throws(
+    () => queue.enqueueCodexSessionMessage(session.id, { text: "continue after apply" }),
+    /no longer available/
+  );
+  assert.equal(queue.queueCodexSessionWorktreeAction(session.id, { action: "apply" }).execution.lifecycleState, "applied");
+  assert.throws(() => queue.queueCodexSessionWorktreeAction(session.id, { action: "discard" }), /already been applied/);
+});
+
+test("interactive Codex persists structured unavailable and apply-blocked worktree states", async () => {
+  store.resetStoreForTest();
+  const user = { username: "alice", role: "user" };
+  const agent = {
+    id: "worktree-state-agent",
+    ownerUser: "alice",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: { worktreeMode: "optional", sandbox: "workspace-write", approvalPolicy: "on-request" }
+  };
+  queue.updateCodexAgent(agent);
+  const session = queue.createCodexSession({
+    projectId: "demo",
+    prompt: "isolate",
+    ownerUser: "alice",
+    targetAgentId: agent.id,
+    user,
+    runtime: { worktreeMode: "always" }
+  });
+  const start = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.completeCodexSessionCommand(start.id, {
+    ok: true,
+    operationSucceeded: false,
+    errorCode: "not-git",
+    error: "Worktree isolation requires a Git workspace.",
+    sessionStatus: "active",
+    execution: {
+      mode: "worktree",
+      lifecycleState: "unavailable",
+      cleanupState: "unavailable",
+      sessionId: session.id,
+      baseWorkspaceId: "demo",
+      errorCode: "not-git",
+      errorSummary: "Worktree isolation requires a Git workspace."
+    }
+  }, { agentId: agent.id });
+  const unavailable = queue.getCodexSession(session.id, { user });
+  assert.equal(unavailable.status, "active");
+  assert.equal(unavailable.execution.lifecycleState, "unavailable");
+  assert.equal(unavailable.execution.errorCode, "not-git");
+
+  db.prepare("UPDATE codex_sessions SET execution_json = ? WHERE id = ?").run(JSON.stringify({
+    mode: "worktree",
+    lifecycleState: "apply-blocked",
+    cleanupState: "apply-blocked",
+    sessionId: session.id,
+    baseWorkspaceId: "demo",
+    path: path.join(tempHome, ".echo-voice", "worktrees", "demo", session.id),
+    errorCode: "base-advanced"
+  }), session.id);
+  const retry = queue.queueCodexSessionWorktreeAction(session.id, { action: "apply", user });
+  assert.equal(retry.pendingCommandCount, 1);
+  assert.equal(retry.execution.path, undefined);
+  assert.equal(retry.execution.basePath, undefined);
+  const leasedRetry = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.match(leasedRetry.execution.path, /worktrees/);
+});
+
+test("queued sessions expose when they are waiting for the same project checkout", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "queue-blocker-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+
+  const running = queue.createCodexSession({ projectId: "demo", prompt: "inspect demo" });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.completeCodexSessionCommand(
+    startCommand.id,
+    { ok: true, appThreadId: "thr_blocker", activeTurnId: "turn_blocker", sessionStatus: "running" },
+    { agentId: agent.id }
+  );
+
+  const queued = queue.createCodexSession({ projectId: "demo", prompt: "change demo next" });
+  const queuedDetail = queue.getCodexSession(queued.id);
+  assert.equal(queuedDetail.queueBlocker.type, "project_busy");
+  assert.equal(queuedDetail.queueBlocker.projectId, "demo");
+  assert.equal(queuedDetail.queueBlocker.blockedBySessionId, running.id);
+
+  queue.updateCodexAgent({
+    ...agent,
+    runtime: { worktreeMode: "optional", sandbox: "workspace-write", approvalPolicy: "on-request" }
+  });
+  const isolated = queue.createCodexSession({
+    projectId: "demo",
+    prompt: "change demo in a worktree",
+    runtime: { worktreeMode: "always" }
+  });
+  const isolatedDetail = queue.getCodexSession(isolated.id);
+  assert.equal(isolatedDetail.queueBlocker, null);
+});
+
+test("interactive status ignores queued commands that cannot be leased from terminal sessions", () => {
+  store.resetStoreForTest();
+
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "will fail before pickup" });
+  db.prepare("UPDATE codex_sessions SET status = 'failed', updated_at = ? WHERE id = ?").run(
+    new Date().toISOString(),
+    session.id
+  );
+
+  const status = queue.codexStatus();
+  assert.equal(status.interactive.queuedCommands, 0);
+  const command = db.prepare("SELECT status, error FROM codex_session_commands WHERE session_id = ?").get(session.id);
+  assert.equal(command.status, "failed");
+  assert.match(command.error, /no longer runnable/);
 });
 
 test("interactive Codex command completion keeps turns that already completed", async () => {
@@ -1525,7 +3296,43 @@ test("interactive Codex sessions can start from screenshots only", async () => {
   assert.equal(session.messages[0].attachments[0].name, "mobile.png");
 });
 
-test("interactive Codex image sessions keep the selected model", async () => {
+test("interactive Codex sessions can start from files only", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "file-only-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+  const fileBase64 = Buffer.from("alpha,beta\n1,2\n", "utf8").toString("base64");
+
+  const created = queue.createCodexSession({
+    projectId: "demo",
+    attachments: [{ type: "file", url: `data:text/csv;base64,${fileBase64}`, name: "sample.csv", mimeType: "text/csv", sizeBytes: 15 }]
+  });
+  assert.equal(created.title, "1 个附件");
+
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(startCommand.type, "start");
+  assert.equal(startCommand.payload.prompt, "");
+  assert.equal(startCommand.payload.attachments.length, 1);
+  assert.equal(startCommand.payload.attachments[0].type, "file");
+  assert.equal(startCommand.payload.attachments[0].name, "sample.csv");
+  assert.equal(startCommand.payload.attachments[0].mimeType, "text/csv");
+  assert.equal(startCommand.payload.attachments[0].downloadPath.startsWith("/api/agent/codex/attachments/"), true);
+
+  const session = queue.getCodexSession(created.id);
+  assert.equal(session.messages.length >= 1, true);
+  assert.equal(session.messages[0].text, "");
+  assert.equal(session.messages[0].attachments.length, 1);
+  assert.equal(session.messages[0].attachments[0].type, "file");
+  assert.equal(session.messages[0].attachments[0].name, "sample.csv");
+
+  const content = queue.getCodexSessionAttachmentContent(session.messages[0].attachments[0].id);
+  assert.equal(content.mimeType, "text/csv");
+  assert.equal(fs.readFileSync(content.filePath, "utf8"), "alpha,beta\n1,2\n");
+});
+
+test("interactive Codex image sessions ignore mobile model overrides", async () => {
   store.resetStoreForTest();
 
   const agent = {
@@ -1539,10 +3346,10 @@ test("interactive Codex image sessions keep the selected model", async () => {
     attachments: [{ type: "image", url: "data:image/png;base64,AAAA", name: "vision.png", mimeType: "image/png", sizeBytes: 4 }],
     runtime: { model: "gpt-5.5", sandbox: "danger-full-access", approvalPolicy: "never", reasoningEffort: "xhigh", profile: "full" }
   });
-  assert.equal(created.runtime.model, "gpt-5.5");
+  assert.equal(created.runtime.model, "");
 
   const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
-  assert.equal(command.runtime.model, "gpt-5.5");
+  assert.equal(command.runtime.model, "");
   assert.equal(command.payload.attachments[0].type, "image");
   assert.equal(command.payload.attachments[0].downloadPath.startsWith("/api/agent/codex/attachments/"), true);
 });
@@ -1574,7 +3381,7 @@ test("interactive Codex sessions avoid models that require a newer CLI", async (
   }
 });
 
-test("interactive Codex sessions keep GPT-5.5 when the desktop CLI supports it", async () => {
+test("interactive Codex sessions reject model overrides until the desktop advertises them", async () => {
   store.resetStoreForTest();
 
   const agent = {
@@ -1587,10 +3394,10 @@ test("interactive Codex sessions keep GPT-5.5 when the desktop CLI supports it",
     prompt: "使用新模型",
     runtime: { model: "gpt-5.5", sandbox: "danger-full-access", approvalPolicy: "never", reasoningEffort: "xhigh", profile: "full" }
   });
-  assert.equal(created.runtime.model, "gpt-5.5");
+  assert.equal(created.runtime.model, "");
 
   const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
-  assert.equal(command.runtime.model, "gpt-5.5");
+  assert.equal(command.runtime.model, "");
   assert.equal(command.payload.prompt, "使用新模型");
 });
 
@@ -1617,6 +3424,8 @@ test("interactive Codex full access can be enabled from mobile without extra Ech
   assert.equal(created.runtime.profile, "full");
   assert.equal(created.runtime.sandbox, "danger-full-access");
   assert.equal(created.runtime.approvalPolicy, "never");
+  assert.equal(created.runtime.model, "gpt-5.5");
+  assert.equal(created.runtime.reasoningEffort, "xhigh");
 
   const command = await queue.waitForCodexSessionCommand({
     waitMs: 1000,
@@ -1632,6 +3441,8 @@ test("interactive Codex full access can be enabled from mobile without extra Ech
   assert.equal(command.runtime.profile, "full");
   assert.equal(command.runtime.sandbox, "danger-full-access");
   assert.equal(command.runtime.approvalPolicy, "never");
+  assert.equal(command.runtime.model, "gpt-5.5");
+  assert.equal(command.runtime.reasoningEffort, "xhigh");
 });
 
 test("interactive Codex sessions drop models not advertised by the desktop app-server", async () => {
@@ -1724,6 +3535,10 @@ test("desktop agent restart recovery keeps a notice until the user continues", a
     ],
     { agentId: agent.id }
   );
+  db.prepare("UPDATE codex_sessions SET updated_at = ? WHERE id = ?").run(
+    new Date(Date.now() - 60000).toISOString(),
+    session.id
+  );
 
   const recoveredIds = store.recoverLostRunningSessionsForAgent({
     agentId: agent.id,
@@ -1746,6 +3561,547 @@ test("desktop agent restart recovery keeps a notice until the user continues", a
   assert.equal(continued.status, "active");
   assert.equal(continued.lastError, "");
   assert.equal(continued.pendingCommandCount, 1);
+});
+
+test("desktop agent restart recovery ignores stale activity snapshots", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "stale-restart-snapshot-agent",
+    agentInstanceId: "stale-restart-instance-a",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "start while another worker is polling" });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.completeCodexSessionCommand(
+    startCommand.id,
+    { ok: true, appThreadId: "thr_stale_snapshot", activeTurnId: "turn_stale_snapshot", sessionStatus: "running" },
+    { agentId: agent.id }
+  );
+
+  db.prepare("UPDATE codex_sessions SET updated_at = ? WHERE id = ?").run("2026-01-01T00:00:01.000Z", session.id);
+
+  const staleRecoveredIds = store.recoverLostRunningSessionsForAgent({
+    agentId: agent.id,
+    busySessionIds: [],
+    runningSessionIds: [],
+    sessionActivitySnapshotAt: "2026-01-01T00:00:00.000Z"
+  });
+  assert.deepEqual(staleRecoveredIds, []);
+
+  const stillRunning = queue.getCodexSession(session.id);
+  assert.equal(stillRunning.status, "running");
+  assert.equal(stillRunning.activeTurnId, "turn_stale_snapshot");
+  assert.equal(stillRunning.lastError, "");
+
+  const freshRecoveredIds = store.recoverLostRunningSessionsForAgent({
+    agentId: agent.id,
+    agentInstanceId: "stale-restart-instance-b",
+    busySessionIds: [],
+    runningSessionIds: [],
+    sessionActivitySnapshotAt: "2026-01-01T00:00:02.000Z"
+  });
+  assert.deepEqual(freshRecoveredIds, [session.id]);
+
+  const recovered = queue.getCodexSession(session.id);
+  assert.equal(recovered.status, "active");
+  assert.equal(recovered.activeTurnId, null);
+  assert.match(recovered.lastError, /Desktop agent restarted/i);
+});
+
+test("graceful desktop restart completes without manufacturing a continuation message", async () => {
+  store.resetStoreForTest();
+  const oldAgent = {
+    id: "graceful-restart-agent",
+    agentInstanceId: "graceful-restart-old",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: { sourceRevision: "a".repeat(40) }
+  };
+  queue.updateCodexAgent(oldAgent);
+  const session = queue.createCodexSession({
+    projectId: "demo",
+    targetAgentId: oldAgent.id,
+    prompt: "deploy Echo and restart safely"
+  });
+  const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent: oldAgent });
+
+  const requested = queue.requestCodexAgentRestart({
+    sessionId: session.id,
+    agentId: oldAgent.id,
+    agentInstanceId: oldAgent.agentInstanceId,
+    expectedRevision: "b".repeat(40),
+    resumeSummary: "Deployment passed; report restart and continue."
+  });
+  assert.equal(requested.status, "requested");
+  assert.equal(queue.getCodexSession(session.id).restartOperation.status, "requested");
+
+  assert.equal(queue.completeCodexSessionCommand(
+    command.id,
+    { ok: true, sessionId: session.id, sessionStatus: "active", finalMessage: "正在安全重启桌面 Agent。" },
+    { agentId: oldAgent.id, agentInstanceId: oldAgent.agentInstanceId }
+  ), true);
+  const armed = queue.armCodexAgentRestart({
+    sessionId: session.id,
+    agentId: oldAgent.id,
+    agentInstanceId: oldAgent.agentInstanceId
+  });
+  assert.equal(armed.status, "restarting");
+
+  const newAgent = {
+    ...oldAgent,
+    agentInstanceId: "graceful-restart-new",
+    runtime: { sourceRevision: "b".repeat(40) }
+  };
+  queue.updateCodexAgent(newAgent);
+  const reconciled = queue.reconcileCodexAgentRestarts(newAgent);
+  assert.equal(reconciled.length, 1);
+  assert.equal(reconciled[0].status, "completed");
+  assert.equal(queue.reconcileCodexAgentRestarts(newAgent).length, 0);
+
+  const resumedSession = queue.getCodexSession(session.id);
+  assert.equal(resumedSession.restartOperation.status, "completed");
+  assert.equal(resumedSession.pendingCommandCount, 0);
+  assert.equal(resumedSession.messages.filter((message) => message.role === "user").length, 1);
+  assert.equal(resumedSession.lastError, "");
+});
+
+test("graceful desktop restart rejects a new instance running the wrong revision", async () => {
+  store.resetStoreForTest();
+  const oldAgent = {
+    id: "restart-wrong-revision-agent",
+    agentInstanceId: "restart-wrong-old",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: { sourceRevision: "a".repeat(40) }
+  };
+  queue.updateCodexAgent(oldAgent);
+  const session = queue.createCodexSession({ projectId: "demo", targetAgentId: oldAgent.id, prompt: "restart after update" });
+  const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent: oldAgent });
+  assert.equal(queue.completeCodexSessionCommand(
+    command.id,
+    { ok: true, sessionId: session.id, sessionStatus: "active" },
+    { agentId: oldAgent.id, agentInstanceId: oldAgent.agentInstanceId }
+  ), true);
+  queue.requestCodexAgentRestart({
+    sessionId: session.id,
+    agentId: oldAgent.id,
+    agentInstanceId: oldAgent.agentInstanceId,
+    expectedRevision: "b".repeat(40)
+  });
+  queue.armCodexAgentRestart({ sessionId: session.id, agentId: oldAgent.id, agentInstanceId: oldAgent.agentInstanceId });
+
+  const outcomes = queue.reconcileCodexAgentRestarts({
+    ...oldAgent,
+    agentInstanceId: "restart-wrong-new",
+    runtime: { sourceRevision: "c".repeat(40) }
+  });
+  assert.equal(outcomes[0].status, "failed");
+  assert.match(outcomes[0].error, /revision/i);
+  assert.equal(queue.getCodexSession(session.id).pendingCommandCount, 0);
+  assert.equal(queue.getCodexSession(session.id).lastError, "");
+});
+
+test("restart drain does not consume the reconnect timeout", () => {
+  store.resetStoreForTest();
+  const agent = {
+    id: "restart-drain-agent",
+    agentInstanceId: "restart-drain-old",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: { sourceRevision: "a".repeat(40) }
+  };
+  queue.updateCodexAgent(agent);
+  const session = queue.createCodexSession({ projectId: "demo", targetAgentId: agent.id, prompt: "drain before restart" });
+  const requested = queue.requestCodexAgentRestart({
+    sessionId: session.id,
+    agentId: agent.id,
+    agentInstanceId: agent.agentInstanceId,
+    expectedRevision: "b".repeat(40)
+  });
+  db.prepare("UPDATE codex_agent_restart_operations SET updated_at = ? WHERE id = ?")
+    .run(new Date(Date.now() - 5 * 60 * 1000).toISOString(), requested.id);
+
+  assert.deepEqual(queue.expireCodexAgentRestarts(), []);
+  assert.equal(queue.getCodexSession(session.id).restartOperation.status, "requested");
+});
+
+test("arming a drained restart is idempotent for a lost HTTP response", () => {
+  store.resetStoreForTest();
+  const agent = {
+    id: "restart-arm-agent",
+    agentInstanceId: "restart-arm-old",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: { sourceRevision: "a".repeat(40) }
+  };
+  queue.updateCodexAgent(agent);
+  const session = queue.createCodexSession({ projectId: "demo", targetAgentId: agent.id, prompt: "arm once" });
+  const requested = queue.requestCodexAgentRestart({
+    sessionId: session.id,
+    agentId: agent.id,
+    agentInstanceId: agent.agentInstanceId,
+    expectedRevision: "b".repeat(40)
+  });
+
+  const first = queue.armCodexAgentRestart({
+    operationId: requested.id,
+    sessionId: session.id,
+    agentId: agent.id,
+    agentInstanceId: agent.agentInstanceId
+  });
+  const repeated = queue.armCodexAgentRestart({
+    operationId: requested.id,
+    sessionId: session.id,
+    agentId: agent.id,
+    agentInstanceId: agent.agentInstanceId
+  });
+
+  assert.equal(first.status, "restarting");
+  assert.equal(repeated.id, first.id);
+  assert.equal(repeated.status, "restarting");
+});
+
+test("restart reconnect timeout stays diagnostic and a late instance corrects it", async () => {
+  store.resetStoreForTest();
+  const oldAgent = {
+    id: "restart-timeout-agent",
+    agentInstanceId: "restart-timeout-old",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: { sourceRevision: "a".repeat(40) }
+  };
+  queue.updateCodexAgent(oldAgent);
+  const session = queue.createCodexSession({
+    projectId: "demo",
+    targetAgentId: oldAgent.id,
+    prompt: "restart and resume"
+  });
+  const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent: oldAgent });
+  assert.equal(queue.completeCodexSessionCommand(
+    command.id,
+    { ok: true, sessionId: session.id, sessionStatus: "active" },
+    { agentId: oldAgent.id, agentInstanceId: oldAgent.agentInstanceId }
+  ), true);
+  const requested = queue.requestCodexAgentRestart({
+    sessionId: session.id,
+    agentId: oldAgent.id,
+    agentInstanceId: oldAgent.agentInstanceId,
+    expectedRevision: "b".repeat(40)
+  });
+  queue.armCodexAgentRestart({
+    sessionId: session.id,
+    agentId: oldAgent.id,
+    agentInstanceId: oldAgent.agentInstanceId
+  });
+  db.prepare("UPDATE codex_agent_restart_operations SET updated_at = ? WHERE id = ?")
+    .run("2020-01-01T00:00:00.000Z", requested.id);
+
+  let notificationCount = 0;
+  const unsubscribe = queue.subscribeCodexSession(session.id, () => {
+    notificationCount += 1;
+  });
+  assert.deepEqual(queue.expireCodexAgentRestarts(), [session.id]);
+  unsubscribe();
+
+  assert.equal(notificationCount, 1);
+  const failed = queue.getCodexSession(session.id);
+  assert.equal(failed.restartOperation.status, "failed");
+  assert.match(failed.restartOperation.error, /did not reconnect/i);
+  assert.equal(failed.lastError, "");
+
+  const lateAgent = {
+    ...oldAgent,
+    agentInstanceId: "restart-timeout-late",
+    runtime: { sourceRevision: "b".repeat(40) }
+  };
+  queue.updateCodexAgent(lateAgent);
+  const corrected = queue.reconcileCodexAgentRestarts(lateAgent);
+  assert.equal(corrected.length, 1);
+  assert.equal(corrected[0].status, "completed");
+  assert.equal(corrected[0].error, "");
+  assert.equal(queue.getCodexSession(session.id).pendingCommandCount, 0);
+});
+
+test("desktop agent restart recovery ignores missing activity from the same agent instance", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "same-instance-agent",
+    agentInstanceId: "same-instance-a",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "long turn still posting completion" });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.completeCodexSessionCommand(
+    startCommand.id,
+    { ok: true, appThreadId: "thr_same_instance", activeTurnId: "turn_same_instance", sessionStatus: "running" },
+    { agentId: agent.id }
+  );
+
+  db.prepare("UPDATE codex_sessions SET updated_at = ? WHERE id = ?").run(
+    new Date(Date.now() - 60000).toISOString(),
+    session.id
+  );
+
+  const recoveredIds = store.recoverLostRunningSessionsForAgent({
+    agentId: agent.id,
+    agentInstanceId: "same-instance-a",
+    busySessionIds: [],
+    runningSessionIds: [],
+    sessionActivitySnapshotAt: new Date().toISOString()
+  });
+  assert.deepEqual(recoveredIds, []);
+
+  const stillRunning = queue.getCodexSession(session.id);
+  assert.equal(stillRunning.status, "running");
+  assert.equal(stillRunning.activeTurnId, "turn_same_instance");
+  assert.equal(stillRunning.leasedBy, agent.id);
+  assert.equal(stillRunning.lastError, "");
+});
+
+test("desktop agent restart recovery is scoped to one desktop environment", async () => {
+  store.resetStoreForTest();
+
+  const agentA = {
+    id: "restart-scope-agent-a",
+    agentInstanceId: "restart-scope-instance-a",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+  const agentB = {
+    id: "restart-scope-agent-b",
+    agentInstanceId: "restart-scope-instance-b",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+  const user = { username: "alice", role: "user" };
+  queue.updateCodexAgent({ ...agentA, ownerUser: "alice" });
+  queue.updateCodexAgent({ ...agentB, ownerUser: "alice" });
+
+  const sessionA = queue.createCodexSession({
+    projectId: "demo",
+    targetAgentId: agentA.id,
+    ownerUser: "alice",
+    user,
+    prompt: "run on desktop A"
+  });
+  const sessionB = queue.createCodexSession({
+    projectId: "demo",
+    targetAgentId: agentB.id,
+    ownerUser: "alice",
+    user,
+    prompt: "run on desktop B"
+  });
+  const commandA = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent: agentA });
+  const commandB = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent: agentB });
+  queue.completeCodexSessionCommand(
+    commandA.id,
+    { ok: true, appThreadId: "thr_restart_scope_a", activeTurnId: "turn_restart_scope_a", sessionStatus: "running" },
+    { agentId: agentA.id, agentInstanceId: agentA.agentInstanceId }
+  );
+  queue.completeCodexSessionCommand(
+    commandB.id,
+    { ok: true, appThreadId: "thr_restart_scope_b", activeTurnId: "turn_restart_scope_b", sessionStatus: "running" },
+    { agentId: agentB.id, agentInstanceId: agentB.agentInstanceId }
+  );
+
+  db.prepare("UPDATE codex_sessions SET updated_at = ? WHERE id IN (?, ?)").run(
+    new Date(Date.now() - 60000).toISOString(),
+    sessionA.id,
+    sessionB.id
+  );
+
+  const recoveredIds = store.recoverLostRunningSessionsForAgent({
+    agentId: agentB.id,
+    agentInstanceId: "restart-scope-instance-b-restarted",
+    busySessionIds: [],
+    runningSessionIds: [],
+    sessionActivitySnapshotAt: new Date().toISOString()
+  });
+  assert.deepEqual(recoveredIds, [sessionB.id]);
+
+  const stillRunningA = queue.getCodexSession(sessionA.id, { user });
+  const recoveredB = queue.getCodexSession(sessionB.id, { user });
+  assert.equal(stillRunningA.status, "running");
+  assert.equal(stillRunningA.activeTurnId, "turn_restart_scope_a");
+  assert.equal(stillRunningA.leasedBy, agentA.id);
+  assert.equal(stillRunningA.lastError, "");
+  assert.equal(recoveredB.status, "active");
+  assert.match(recoveredB.lastError, /Desktop agent restarted/i);
+});
+
+test("desktop agent restart recovery ignores running sessions without an active turn", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "no-active-turn-agent",
+    agentInstanceId: "no-active-turn-instance-a",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "等待后台状态同步" });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.completeCodexSessionCommand(
+    startCommand.id,
+    { ok: true, appThreadId: "thr_no_active_turn", sessionStatus: "running" },
+    { agentId: agent.id, agentInstanceId: agent.agentInstanceId }
+  );
+
+  db.prepare("UPDATE codex_sessions SET updated_at = ? WHERE id = ?").run(
+    new Date(Date.now() - 60000).toISOString(),
+    session.id
+  );
+
+  const recoveredIds = store.recoverLostRunningSessionsForAgent({
+    agentId: agent.id,
+    agentInstanceId: "no-active-turn-instance-b",
+    busySessionIds: [],
+    runningSessionIds: [],
+    sessionActivitySnapshotAt: new Date().toISOString()
+  });
+  assert.deepEqual(recoveredIds, []);
+
+  const detail = queue.getCodexSession(session.id);
+  assert.equal(detail.status, "running");
+  assert.equal(detail.activeTurnId, null);
+  assert.equal(detail.leasedBy, agent.id);
+  assert.equal(detail.lastError, "");
+  assert.equal(detail.events.some((event) => event.type === "session.agent.recovered"), false);
+});
+
+test("desktop agent restart recovery clears orphaned mobile waits", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "approval-recovery-agent",
+    agentInstanceId: "approval-recovery-instance-a",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+
+  const session = queue.createCodexSession({ projectId: "demo", ownerUser: "alice", prompt: "需要审批后继续" });
+  const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.completeCodexSessionCommand(
+    command.id,
+    { ok: true, appThreadId: "thr_approval_recovery", sessionStatus: "running" },
+    { agentId: agent.id, agentInstanceId: agent.agentInstanceId }
+  );
+
+  const approval = queue.createCodexSessionApproval(
+    {
+      sessionId: session.id,
+      appRequestId: "approval-recovery-request",
+      method: "item/commandExecution/requestApproval",
+      prompt: "Approve a command?",
+      payload: { command: "pnpm test", cwd: process.cwd() }
+    },
+    { agentId: agent.id, agentInstanceId: agent.agentInstanceId }
+  );
+  assert.equal(approval.status, "pending");
+
+  db.prepare("UPDATE codex_sessions SET updated_at = ? WHERE id = ?").run(
+    new Date(Date.now() - 60000).toISOString(),
+    session.id
+  );
+
+  const recoveredIds = store.recoverLostRunningSessionsForAgent({
+    agentId: agent.id,
+    agentInstanceId: "approval-recovery-instance-b",
+    busySessionIds: [],
+    runningSessionIds: [],
+    sessionActivitySnapshotAt: new Date().toISOString()
+  });
+  assert.deepEqual(recoveredIds, [session.id]);
+
+  const detail = queue.getCodexSession(session.id, { user: { username: "alice", role: "user" } });
+  assert.equal(detail.status, "active");
+  assert.equal(detail.pendingApprovalCount, 0);
+  assert.equal(detail.approvals.length, 0);
+  assert.match(detail.lastError, /Desktop agent restarted/i);
+  assert.equal(detail.events.some((event) => event.type === "approval.denied"), true);
+  assert.equal(detail.events.some((event) => event.type === "session.agent.recovered"), true);
+});
+
+test("desktop agent restart recovery clears orphaned mobile input waits", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "interaction-recovery-agent",
+    agentInstanceId: "interaction-recovery-instance-a",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+
+  const session = queue.createCodexSession({ projectId: "demo", ownerUser: "alice", prompt: "需要用户输入后继续" });
+  const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.completeCodexSessionCommand(
+    command.id,
+    { ok: true, appThreadId: "thr_interaction_recovery", sessionStatus: "running" },
+    { agentId: agent.id, agentInstanceId: agent.agentInstanceId }
+  );
+
+  const interaction = queue.createCodexSessionInteraction(
+    {
+      sessionId: session.id,
+      appRequestId: "interaction-recovery-request",
+      method: "item/tool/requestUserInput",
+      kind: "user_input",
+      prompt: "Choose the next model",
+      payload: {
+        threadId: "thr_interaction_recovery",
+        questions: [{ id: "model_choice", question: "Choose", options: [{ label: "A" }, { label: "B" }] }]
+      }
+    },
+    { agentId: agent.id, agentInstanceId: agent.agentInstanceId }
+  );
+  assert.equal(interaction.status, "pending");
+
+  db.prepare("UPDATE codex_sessions SET updated_at = ? WHERE id = ?").run(
+    new Date(Date.now() - 60000).toISOString(),
+    session.id
+  );
+
+  const recoveredIds = store.recoverLostRunningSessionsForAgent({
+    agentId: agent.id,
+    agentInstanceId: "interaction-recovery-instance-b",
+    busySessionIds: [],
+    runningSessionIds: [],
+    sessionActivitySnapshotAt: new Date().toISOString()
+  });
+  assert.deepEqual(recoveredIds, [session.id]);
+
+  const detail = queue.getCodexSession(session.id, { user: { username: "alice", role: "user" } });
+  assert.equal(detail.status, "active");
+  assert.equal(detail.pendingInteractionCount, 0);
+  assert.equal(detail.pendingUserInputCount, 0);
+  assert.equal(detail.interactions.length, 0);
+  assert.match(detail.lastError, /Desktop agent restarted/i);
+  assert.equal(detail.events.some((event) => event.type === "interaction.cancelled"), true);
+  assert.equal(detail.events.some((event) => event.type === "session.agent.recovered"), true);
+});
+
+test("desktop agent restart recovery ignores newly leased sessions when clocks are skewed", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "skewed-recovery-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "start while another worker polls" });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.completeCodexSessionCommand(
+    startCommand.id,
+    { ok: true, appThreadId: "thr_skewed", activeTurnId: "turn_skewed", sessionStatus: "running" },
+    { agentId: agent.id }
+  );
+
+  const recoveredIds = store.recoverLostRunningSessionsForAgent({
+    agentId: agent.id,
+    busySessionIds: [],
+    runningSessionIds: [],
+    sessionActivitySnapshotAt: new Date(Date.now() + 60 * 60 * 1000).toISOString()
+  });
+  assert.deepEqual(recoveredIds, []);
+
+  const stillRunning = queue.getCodexSession(session.id);
+  assert.equal(stillRunning.status, "running");
+  assert.equal(stillRunning.activeTurnId, "turn_skewed");
+  assert.equal(stillRunning.leasedBy, agent.id);
 });
 
 test("desktop agent restart recovery clears stale notices when a follow-up is already queued", async () => {
@@ -1777,6 +4133,16 @@ test("desktop agent restart recovery clears stale notices when a follow-up is al
   );
 
   queue.enqueueCodexSessionMessage(session.id, { text: "重启后继续同一个会话" });
+  db.prepare("UPDATE codex_sessions SET updated_at = ? WHERE id = ?").run(
+    new Date(Date.now() - 60000).toISOString(),
+    session.id
+  );
+  store.recoverLostRunningSessionsForAgent({
+    agentId: agent.id,
+    busySessionIds: [],
+    runningSessionIds: [],
+    sessionActivitySnapshotAt: new Date().toISOString()
+  });
   const messageCommand = await queue.waitForCodexSessionCommand({
     waitMs: 1000,
     agent,
@@ -1797,6 +4163,144 @@ test("desktop agent restart recovery clears stale notices when a follow-up is al
   assert.equal(recovered.activeTurnId, null);
   assert.equal(recovered.lastError, "");
   assert.equal(recovered.events.some((event) => event.type === "session.agent.recovered"), true);
+});
+
+test("expired command leases reconcile before they can be leased again", async () => {
+  store.resetStoreForTest();
+  const agent = {
+    id: "protocol-reconcile-agent",
+    agentInstanceId: "protocol-instance-a",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "run once" });
+  const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(command.attempt, 1);
+
+  db.prepare("UPDATE codex_session_commands SET lease_expires_at = ? WHERE id = ?")
+    .run("2020-01-01T00:00:00.000Z", command.id);
+  const reconciliation = store.listSessionCommandReconciliations({ agentId: agent.id });
+  assert.deepEqual(reconciliation.map((item) => item.commandId), [command.id]);
+  assert.equal(db.prepare("SELECT status FROM codex_session_commands WHERE id = ?").get(command.id).status, "reconciling");
+
+  const duplicate = await queue.waitForCodexSessionCommand({
+    waitMs: 10,
+    agent: { ...agent, agentInstanceId: "protocol-instance-b" }
+  });
+  assert.equal(duplicate, null);
+
+  const outcomes = store.reconcileSessionCommands({
+    agentId: agent.id,
+    agentInstanceId: "protocol-instance-a",
+    states: [{ commandId: command.id, attempt: command.attempt, state: "running" }]
+  });
+  assert.deepEqual(outcomes, [{ commandId: command.id, attempt: 1, outcome: "running" }]);
+  const renewed = db.prepare("SELECT status, attempt FROM codex_session_commands WHERE id = ?").get(command.id);
+  assert.deepEqual(renewed, { status: "leased", attempt: 1 });
+});
+
+test("reconciliation only requeues work explicitly confirmed not started", async () => {
+  store.resetStoreForTest();
+  const agent = {
+    id: "protocol-not-started-agent",
+    agentInstanceId: "protocol-not-started-a",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "safe retry" });
+  const first = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  db.prepare("UPDATE codex_session_commands SET lease_expires_at = ? WHERE id = ?")
+    .run("2020-01-01T00:00:00.000Z", first.id);
+  store.listSessionCommandReconciliations({ agentId: agent.id });
+
+  const outcomes = store.reconcileSessionCommands({
+    agentId: agent.id,
+    agentInstanceId: "protocol-not-started-b",
+    states: [{ commandId: first.id, attempt: 1, state: "not_started" }]
+  });
+  assert.equal(outcomes[0].outcome, "requeued");
+  assert.equal(outcomes[0].nextAttempt, 2);
+
+  const second = await queue.waitForCodexSessionCommand({
+    waitMs: 1000,
+    agent: { ...agent, agentInstanceId: "protocol-not-started-b" }
+  });
+  assert.equal(second.id, first.id);
+  assert.equal(second.attempt, 2);
+});
+
+test("command completion and protocol session events are idempotent by attempt", async () => {
+  store.resetStoreForTest();
+  const agent = {
+    id: "protocol-idempotency-agent",
+    agentInstanceId: "protocol-idempotency-instance",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "report once" });
+  const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  const event = {
+    eventId: "stable-terminal-event",
+    commandId: command.id,
+    attempt: command.attempt,
+    type: "turn.completed",
+    text: "done",
+    sessionStatus: "active",
+    raw: { method: "turn/completed", params: { turn: { id: "turn-protocol" } } }
+  };
+  assert.equal(queue.appendCodexSessionEvents(session.id, [event], { agent }), true);
+  assert.equal(queue.appendCodexSessionEvents(session.id, [event], { agent }), true);
+
+  const result = { ok: true, sessionId: session.id, sessionStatus: "active", finalMessage: "done" };
+  assert.equal(queue.completeCodexSessionCommand(command.id, result, { agent, attempt: 1 }), true);
+  assert.equal(queue.completeCodexSessionCommand(command.id, result, { agent, attempt: 1 }), true);
+  assert.equal(queue.completeCodexSessionCommand(command.id, { ...result, finalMessage: "different" }, { agent, attempt: 1 }), false);
+  assert.equal(queue.completeCodexSessionCommand(command.id, result, { agent, attempt: 2 }), false);
+
+  const detail = queue.getCodexSession(session.id);
+  assert.equal(detail.events.filter((item) => item.text === "done").length, 1);
+  assert.equal(detail.events.filter((item) => item.type === "command.completed").length, 1);
+});
+
+test("unknown reconciliation state fails the command and session explicitly", async () => {
+  store.resetStoreForTest();
+  const agent = {
+    id: "protocol-unknown-agent",
+    agentInstanceId: "protocol-unknown-a",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "restart midway" });
+  const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  db.prepare("UPDATE codex_session_commands SET lease_expires_at = ? WHERE id = ?")
+    .run("2020-01-01T00:00:00.000Z", command.id);
+  store.listSessionCommandReconciliations({ agentId: agent.id });
+
+  const outcomes = store.reconcileSessionCommands({
+    agentId: agent.id,
+    agentInstanceId: "protocol-unknown-b",
+    states: [{ commandId: command.id, attempt: 1, state: "unknown" }]
+  });
+  assert.equal(outcomes[0].outcome, "failed");
+  assert.equal(db.prepare("SELECT status FROM codex_session_commands WHERE id = ?").get(command.id).status, "failed");
+  assert.equal(queue.getCodexSession(session.id).status, "failed");
+});
+
+test("unanswered reconciliation expires into a terminal failure", async () => {
+  store.resetStoreForTest();
+  const agent = {
+    id: "protocol-timeout-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "disconnect forever" });
+  const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  db.prepare("UPDATE codex_session_commands SET lease_expires_at = ? WHERE id = ?")
+    .run("2020-01-01T00:00:00.000Z", command.id);
+  store.listSessionCommandReconciliations({ agentId: agent.id });
+  db.prepare("UPDATE codex_session_commands SET lease_expires_at = ? WHERE id = ?")
+    .run("2020-01-01T00:00:00.000Z", command.id);
+
+  assert.deepEqual(store.listSessionCommandReconciliations({ agentId: agent.id }), []);
+  assert.equal(db.prepare("SELECT status FROM codex_session_commands WHERE id = ?").get(command.id).status, "failed");
+  const detail = queue.getCodexSession(session.id);
+  assert.equal(detail.status, "failed");
+  assert.equal(detail.events.some((event) => event.type === "command.reconciliation.failed"), true);
 });
 
 test("interactive Codex running command completion refreshes the session lease", async () => {
@@ -1899,9 +4403,23 @@ test("interactive Codex sessions can continue after model rate limit failures", 
     { agentId: agent.id }
   );
 
+  const retrying = queue.getCodexSession(session.id);
+  assert.equal(retrying.status, "queued");
+  assert.match(retrying.lastError, /retrying/i);
+
+  makeSessionCommandAvailable(startCommand.id);
+  const firstRetry = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(firstRetry.id, startCommand.id);
+  queue.completeCodexSessionCommand(firstRetry.id, { ok: false, error: "HTTP 503 Service Unavailable" }, { agentId: agent.id });
+
+  makeSessionCommandAvailable(startCommand.id);
+  const secondRetry = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(secondRetry.id, startCommand.id);
+  queue.completeCodexSessionCommand(secondRetry.id, { ok: false, error: "HTTP 502 Bad Gateway" }, { agentId: agent.id });
+
   const failed = queue.getCodexSession(session.id);
   assert.equal(failed.status, "failed");
-  assert.match(failed.lastError, /rate limit/i);
+  assert.match(failed.lastError, /502|rate limit/i);
 
   const continued = queue.enqueueCodexSessionMessage(session.id, { text: "等限流恢复后继续" });
   assert.equal(continued.status, "active");
@@ -1922,7 +4440,7 @@ test("interactive Codex approvals wait for mobile decisions", async () => {
     id: "approval-agent",
     workspaces: [{ id: "demo", path: process.cwd() }]
   };
-  const session = queue.createCodexSession({ projectId: "demo", prompt: "需要跑测试" });
+  const session = queue.createCodexSession({ projectId: "demo", ownerUser: "alice", prompt: "需要跑测试" });
   const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
   queue.appendCodexSessionEvents(session.id, [{ type: "thread.started", text: "started", appThreadId: "thr_a" }], {
     agentId: agent.id
@@ -2008,7 +4526,7 @@ test("interactive Codex user input waits for mobile answers", async () => {
     id: "interaction-agent",
     workspaces: [{ id: "demo", path: process.cwd() }]
   };
-  const session = queue.createCodexSession({ projectId: "demo", prompt: "需要选择模型" });
+  const session = queue.createCodexSession({ projectId: "demo", ownerUser: "alice", prompt: "需要选择模型" });
   const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
   queue.appendCodexSessionEvents(session.id, [{ type: "thread.started", text: "started", appThreadId: "thr_i" }], {
     agentId: agent.id
@@ -2199,6 +4717,76 @@ test("interactive Codex user input clears when app-server resolves the request",
   assert.equal(detail.interactions.length, 0);
 });
 
+function appendTestContextUsage(sessionId, agentId, { threadId, turnId, totalTokens, modelContextWindow = 100000 }) {
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      sessionId,
+      [
+        {
+          type: "thread/tokenUsage/updated",
+          text: "Context usage updated.",
+          raw: {
+            method: "thread/tokenUsage/updated",
+            params: {
+              threadId,
+              turnId,
+              tokenUsage: {
+                total: { totalTokens },
+                last: { totalTokens },
+                modelContextWindow
+              }
+            }
+          }
+        }
+      ],
+      { agentId }
+    ),
+    true
+  );
+}
+
+function compactCommandCount(sessionId) {
+  return db.prepare("SELECT COUNT(*) AS count FROM codex_session_commands WHERE session_id = ? AND type = 'compact'").get(sessionId).count;
+}
+
+function sessionCommandRow(commandId) {
+  const row = db.prepare(`
+    SELECT status, available_at AS availableAt, payload_json AS payloadJson
+    FROM codex_session_commands
+    WHERE id = ?
+  `).get(commandId);
+  return row ? { ...row, payload: JSON.parse(row.payloadJson || "{}") } : null;
+}
+
+function makeSessionCommandAvailable(commandId) {
+  db.prepare("UPDATE codex_session_commands SET available_at = ? WHERE id = ?").run(new Date(Date.now() - 1000).toISOString(), commandId);
+}
+
+function compactionQueuedEventCount(sessionId) {
+  return db.prepare("SELECT COUNT(*) AS count FROM codex_session_events WHERE session_id = ? AND type = 'context.compaction.queued'").get(sessionId).count;
+}
+
+async function createActiveSessionForCompaction({ agentId, threadId, prompt = "long context", contextUsageTotalTokens = null }) {
+  const agent = {
+    id: agentId,
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+  const session = queue.createCodexSession({ projectId: "demo", prompt });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.appendCodexSessionEvents(session.id, [{ type: "thread.started", text: "started", appThreadId: threadId }], {
+    agentId: agent.id
+  });
+  if (contextUsageTotalTokens !== null) {
+    appendTestContextUsage(session.id, agent.id, {
+      threadId,
+      turnId: `${threadId}_usage`,
+      totalTokens: contextUsageTotalTokens
+    });
+  }
+  queue.completeCodexSessionCommand(startCommand.id, { ok: true, appThreadId: threadId, sessionStatus: "active" }, { agentId: agent.id });
+  return { agent, session };
+}
+
 test("interactive Codex sessions can request app-server context compaction", async () => {
   store.resetStoreForTest();
 
@@ -2210,6 +4798,11 @@ test("interactive Codex sessions can request app-server context compaction", asy
   const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
   queue.appendCodexSessionEvents(session.id, [{ type: "thread.started", text: "started", appThreadId: "thr_compact" }], {
     agentId: agent.id
+  });
+  appendTestContextUsage(session.id, agent.id, {
+    threadId: "thr_compact",
+    turnId: "turn_before_compact",
+    totalTokens: 90000
   });
   queue.completeCodexSessionCommand(startCommand.id, { ok: true, appThreadId: "thr_compact", sessionStatus: "active" }, { agentId: agent.id });
 
@@ -2249,6 +4842,332 @@ test("interactive Codex sessions can request app-server context compaction", asy
   assert.equal(compacted.status, "active");
   assert.equal(compacted.leasedBy, null);
   assert.equal(compacted.events.some((event) => event.raw?.params?.item?.type === "contextCompaction"), true);
+});
+
+test("automatic context compaction below threshold is a no-op", async () => {
+  store.resetStoreForTest();
+
+  const { agent, session } = await createActiveSessionForCompaction({
+    agentId: "auto-compact-low-agent",
+    threadId: "thr_auto_low",
+    prompt: "short context",
+    contextUsageTotalTokens: 40000
+  });
+
+  const unchanged = queue.compactCodexSession(session.id, { automatic: true, reason: "context-threshold" });
+  assert.equal(unchanged.pendingCommandCount, 0);
+  assert.equal(compactCommandCount(session.id), 0);
+  assert.equal(compactionQueuedEventCount(session.id), 0);
+});
+
+test("automatic context compaction queues once per fresh threshold crossing", async () => {
+  store.resetStoreForTest();
+
+  const { agent, session } = await createActiveSessionForCompaction({
+    agentId: "auto-compact-once-agent",
+    threadId: "thr_auto_once",
+    prompt: "long context",
+    contextUsageTotalTokens: 90000
+  });
+
+  const queued = queue.compactCodexSession(session.id, { automatic: true, reason: "context-threshold" });
+  assert.equal(queued.pendingCommandCount, 1);
+  assert.equal(compactCommandCount(session.id), 1);
+  assert.equal(compactionQueuedEventCount(session.id), 1);
+
+  const duplicate = queue.compactCodexSession(session.id, { automatic: true, reason: "context-threshold" });
+  assert.equal(duplicate.pendingCommandCount, 1);
+  assert.equal(compactCommandCount(session.id), 1);
+  assert.equal(compactionQueuedEventCount(session.id), 1);
+});
+
+test("context usage events trigger automatic compaction without an open mobile client", async () => {
+  store.resetStoreForTest();
+
+  const agent = { id: "background-auto-compact-agent", workspaces: [{ id: "demo", path: process.cwd() }] };
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "background compaction" });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.appendCodexSessionEvents(session.id, [{ type: "thread.started", text: "started", appThreadId: "thr_background_auto" }], {
+    agentId: agent.id
+  });
+  queue.completeCodexSessionCommand(startCommand.id, {
+    ok: true,
+    appThreadId: "thr_background_auto",
+    activeTurnId: "turn_background_auto",
+    sessionStatus: "running"
+  }, { agentId: agent.id });
+  queue.appendCodexSessionEvents(session.id, [
+    {
+      type: "thread/tokenUsage/updated",
+      text: "Context usage updated.",
+      raw: {
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: "thr_background_auto",
+          turnId: "turn_background_auto",
+          tokenUsage: { total: { totalTokens: 90000 }, last: { totalTokens: 90000 }, modelContextWindow: 100000 }
+        }
+      }
+    },
+    {
+      type: "turn/completed",
+      text: "Turn completed.",
+      raw: { method: "turn/completed", params: { threadId: "thr_background_auto", turn: { id: "turn_background_auto", status: "completed" } } }
+    }
+  ], { agentId: agent.id });
+
+  const compactCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(compactCommand.type, "compact");
+  assert.equal(compactCommand.payload.automatic, true);
+  assert.equal(compactCommand.payload.reason, "context-threshold");
+  assert.equal(compactionQueuedEventCount(session.id), 1);
+});
+
+test("turn completion rechecks high context usage that arrived while the turn was running", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "turn-finished-auto-compact-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "finish before compacting" });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.appendCodexSessionEvents(session.id, [{ type: "thread.started", text: "started", appThreadId: "thr_turn_finished" }], {
+    agentId: agent.id
+  });
+  queue.completeCodexSessionCommand(startCommand.id, {
+    ok: true,
+    appThreadId: "thr_turn_finished",
+    activeTurnId: "turn_finished",
+    sessionStatus: "running"
+  }, { agentId: agent.id });
+  appendTestContextUsage(session.id, agent.id, {
+    threadId: "thr_turn_finished",
+    turnId: "turn_finished",
+    totalTokens: 90000
+  });
+  assert.equal(compactCommandCount(session.id), 0);
+
+  queue.appendCodexSessionEvents(session.id, [{
+    type: "turn/completed",
+    text: "Turn completed.",
+    raw: { method: "turn/completed", params: { threadId: "thr_turn_finished", turn: { id: "turn_finished", status: "completed" } } }
+  }], { agentId: agent.id });
+
+  const compactCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(compactCommand.type, "compact");
+  assert.equal(compactCommand.payload.automatic, true);
+  assert.equal(compactCommandCount(session.id), 1);
+});
+
+test("failed automatic compaction leaves the conversation available for queued follow-ups", async () => {
+  store.resetStoreForTest();
+
+  const { agent, session } = await createActiveSessionForCompaction({
+    agentId: "failed-auto-compact-agent",
+    threadId: "thr_failed_auto",
+    prompt: "keep the conversation recoverable",
+    contextUsageTotalTokens: 90000
+  });
+  queue.compactCodexSession(session.id, { automatic: true, reason: "context-threshold" });
+  queue.enqueueCodexSessionMessage(session.id, { text: "continue after failed compaction" });
+  const compactCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(compactCommand.type, "compact");
+  assert.equal(queue.completeCodexSessionCommand(compactCommand.id, {
+    ok: false,
+    error: "Codex thread can no longer be compacted because the local app-server thread was not found."
+  }, { agentId: agent.id }), true);
+  assert.equal(queue.getCodexSession(session.id).status, "active");
+
+  const messageCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(messageCommand.type, "message");
+});
+
+test("automatic context compaction ignores usage already handled by compaction", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "auto-compact-stale-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "old high context" });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.appendCodexSessionEvents(session.id, [{ type: "thread.started", text: "started", appThreadId: "thr_auto_stale" }], {
+    agentId: agent.id
+  });
+  appendTestContextUsage(session.id, agent.id, {
+    threadId: "thr_auto_stale",
+    turnId: "turn_auto_stale",
+    totalTokens: 92000
+  });
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      session.id,
+      [
+        {
+          type: "item/completed",
+          text: "Context compaction completed.",
+          raw: {
+            method: "item/completed",
+            params: { threadId: "thr_auto_stale", item: { type: "contextCompaction", id: "ctx_auto_stale" } }
+          }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+  queue.completeCodexSessionCommand(startCommand.id, { ok: true, appThreadId: "thr_auto_stale", sessionStatus: "active" }, { agentId: agent.id });
+
+  const unchanged = queue.compactCodexSession(session.id, { automatic: true, reason: "context-threshold" });
+  assert.equal(unchanged.pendingCommandCount, 0);
+  assert.equal(compactCommandCount(session.id), 0);
+  assert.equal(compactionQueuedEventCount(session.id), 0);
+});
+
+test("automatic context compaction can queue again after fresh post-compaction usage", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "auto-compact-fresh-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "new high context" });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.appendCodexSessionEvents(session.id, [{ type: "thread.started", text: "started", appThreadId: "thr_auto_fresh" }], {
+    agentId: agent.id
+  });
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      session.id,
+      [
+        {
+          type: "item/completed",
+          text: "Context compaction completed.",
+          raw: {
+            method: "item/completed",
+            params: { threadId: "thr_auto_fresh", item: { type: "contextCompaction", id: "ctx_auto_fresh" } }
+          }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+  appendTestContextUsage(session.id, agent.id, {
+    threadId: "thr_auto_fresh",
+    turnId: "turn_auto_fresh",
+    totalTokens: 91000
+  });
+  queue.completeCodexSessionCommand(startCommand.id, { ok: true, appThreadId: "thr_auto_fresh", sessionStatus: "active" }, { agentId: agent.id });
+
+  const queued = queue.compactCodexSession(session.id, { automatic: true, reason: "context-threshold" });
+  assert.equal(queued.pendingCommandCount, 1);
+  assert.equal(compactCommandCount(session.id), 1);
+  assert.equal(compactionQueuedEventCount(session.id), 1);
+});
+
+test("manual context compaction does not require context usage threshold", async () => {
+  store.resetStoreForTest();
+
+  const { agent, session } = await createActiveSessionForCompaction({
+    agentId: "manual-compact-low-agent",
+    threadId: "thr_manual_low",
+    prompt: "manual compact"
+  });
+
+  const queued = queue.compactCodexSession(session.id, { automatic: false, reason: "manual" });
+  assert.equal(queued.pendingCommandCount, 1);
+  assert.equal(compactCommandCount(session.id), 1);
+
+  const compactCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(compactCommand.type, "compact");
+  assert.equal(compactCommand.payload.automatic, false);
+  assert.equal(compactCommand.payload.reason, "manual");
+});
+
+test("automatic context compaction inside a running turn does not interrupt the turn", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "auto-compact-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "长任务需要继续跑" });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.appendCodexSessionEvents(session.id, [{ type: "thread.started", text: "started", appThreadId: "thr_auto_compact" }], {
+    agentId: agent.id
+  });
+  queue.completeCodexSessionCommand(
+    startCommand.id,
+    {
+      ok: true,
+      appThreadId: "thr_auto_compact",
+      activeTurnId: "turn_auto_compact",
+      sessionStatus: "running"
+    },
+    { agentId: agent.id }
+  );
+
+  const compactEventAccepted = queue.appendCodexSessionEvents(
+    session.id,
+    [
+      {
+        type: "item/completed",
+        text: "Context compaction completed.",
+        raw: {
+          method: "item/completed",
+          params: {
+            threadId: "thr_auto_compact",
+            turnId: "turn_auto_compact",
+            item: { type: "contextCompaction", id: "ctx_auto" }
+          }
+        }
+      }
+    ],
+    { agentId: agent.id }
+  );
+
+  assert.equal(compactEventAccepted, true);
+  const stillRunning = queue.getCodexSession(session.id);
+  assert.equal(stillRunning.status, "running");
+  assert.equal(stillRunning.leasedBy, agent.id);
+  assert.equal(stillRunning.activeTurnId, "turn_auto_compact");
+
+  const finalEventsAccepted = queue.appendCodexSessionEvents(
+    session.id,
+    [
+      {
+        type: "item/completed",
+        text: "压缩后继续完成。",
+        finalMessage: "压缩后继续完成。",
+        raw: {
+          method: "item/completed",
+          params: {
+            threadId: "thr_auto_compact",
+            turnId: "turn_auto_compact",
+            item: { type: "agentMessage", id: "msg_auto", text: "压缩后继续完成。" }
+          }
+        }
+      },
+      {
+        type: "turn/completed",
+        text: "Turn completed.",
+        raw: {
+          method: "turn/completed",
+          params: { threadId: "thr_auto_compact", turn: { id: "turn_auto_compact", status: "completed" } }
+        }
+      }
+    ],
+    { agentId: agent.id }
+  );
+
+  assert.equal(finalEventsAccepted, true);
+  const completed = queue.getCodexSession(session.id);
+  assert.equal(completed.status, "active");
+  assert.equal(completed.leasedBy, null);
+  assert.equal(completed.activeTurnId, null);
+  assert.equal(completed.finalMessage, "压缩后继续完成。");
 });
 
 test("compact command completion releases after compaction events followed by git summary", async () => {
@@ -2309,6 +5228,105 @@ test("compact command completion releases after compaction events followed by gi
     queue.completeCodexSessionCommand(
       compactCommand.id,
       { ok: true, appThreadId: "thr_compact_race", sessionStatus: "running" },
+      { agentId: agent.id }
+    ),
+    true
+  );
+
+  const completed = queue.getCodexSession(session.id);
+  assert.equal(completed.status, "active");
+  assert.equal(completed.leasedBy, null);
+  assert.equal(completed.activeTurnId, null);
+});
+
+test("context compaction item completion releases compact sessions after command result", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "compact-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "启动后压缩" });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.appendCodexSessionEvents(session.id, [{ type: "thread.started", text: "started", appThreadId: "thr_compact_item" }], {
+    agentId: agent.id
+  });
+  queue.completeCodexSessionCommand(
+    startCommand.id,
+    { ok: true, appThreadId: "thr_compact_item", sessionStatus: "active" },
+    { agentId: agent.id }
+  );
+
+  queue.compactCodexSession(session.id, { automatic: false, reason: "manual" });
+  const compactCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(compactCommand.type, "compact");
+  queue.completeCodexSessionCommand(
+    compactCommand.id,
+    { ok: true, appThreadId: "thr_compact_item", sessionStatus: "running" },
+    { agentId: agent.id }
+  );
+
+  queue.appendCodexSessionEvents(
+    session.id,
+    [
+      {
+        type: "item/completed",
+        text: "Context compaction completed.",
+        raw: {
+          method: "item/completed",
+          params: { threadId: "thr_compact_item", item: { type: "contextCompaction", id: "ctx_item" } }
+        }
+      }
+    ],
+    { agentId: agent.id }
+  );
+
+  const completed = queue.getCodexSession(session.id);
+  assert.equal(completed.status, "active");
+  assert.equal(completed.leasedBy, null);
+  assert.equal(completed.activeTurnId, null);
+});
+
+test("compact command completion treats prior context compaction item as terminal", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "compact-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }]
+  };
+  const session = queue.createCodexSession({ projectId: "demo", prompt: "启动后压缩" });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  queue.appendCodexSessionEvents(session.id, [{ type: "thread.started", text: "started", appThreadId: "thr_compact_item_race" }], {
+    agentId: agent.id
+  });
+  queue.completeCodexSessionCommand(
+    startCommand.id,
+    { ok: true, appThreadId: "thr_compact_item_race", sessionStatus: "active" },
+    { agentId: agent.id }
+  );
+
+  queue.compactCodexSession(session.id, { automatic: false, reason: "manual" });
+  const compactCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(compactCommand.type, "compact");
+  queue.appendCodexSessionEvents(
+    session.id,
+    [
+      {
+        type: "item/completed",
+        text: "Context compaction completed.",
+        raw: {
+          method: "item/completed",
+          params: { threadId: "thr_compact_item_race", item: { type: "contextCompaction", id: "ctx_item_race" } }
+        }
+      }
+    ],
+    { agentId: agent.id }
+  );
+
+  assert.equal(
+    queue.completeCodexSessionCommand(
+      compactCommand.id,
+      { ok: true, appThreadId: "thr_compact_item_race", sessionStatus: "running" },
       { agentId: agent.id }
     ),
     true
@@ -2406,6 +5424,116 @@ test("interactive Codex sessions can queue mobile cancellation for the active tu
   assert.equal(nextCommand, null);
 });
 
+test("mobile cancellation can interrupt a synchronously leased backend turn", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "sync-cancel-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: claudeRosterRuntime()
+  };
+  const otherAgent = {
+    id: "other-sync-cancel-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: claudeRosterRuntime()
+  };
+  queue.updateCodexAgent(agent);
+  queue.updateCodexAgent(otherAgent);
+
+  const session = queue.createCodexSession({
+    projectId: "demo",
+    targetAgentId: agent.id,
+    prompt: "run a long Claude task",
+    runtime: { backendId: "claude-code", provider: "claude-code", backendName: "Claude Code" }
+  });
+  const startCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(startCommand.type, "start");
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      session.id,
+      [
+        {
+          type: "turn.started",
+          text: "Claude Code turn started.",
+          appThreadId: "thr_sync_cancel",
+          activeTurnId: "turn_sync_cancel",
+          sessionStatus: "running",
+          raw: {
+            method: "turn/started",
+            params: { threadId: "thr_sync_cancel", turn: { id: "turn_sync_cancel", status: "inProgress" } }
+          }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+
+  const cancelled = queue.cancelCodexSession(session.id, { reason: "stop sync backend" });
+  assert.equal(cancelled.pendingCommandCount, 2);
+  assert.equal(cancelled.leasedCommandCount, 1);
+  assert.equal(cancelled.queuedCommandCount, 1);
+
+  const wrongAgentStop = await queue.waitForCodexSessionCommand({
+    waitMs: 1000,
+    agent: otherAgent,
+    commandTypes: ["stop"]
+  });
+  assert.equal(wrongAgentStop, null);
+
+  const normalPoll = await queue.waitForCodexSessionCommand({
+    waitMs: 1000,
+    agent,
+    busySessionIds: [session.id],
+    commandTypes: ["message"]
+  });
+  assert.equal(normalPoll, null);
+
+  const stopCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent, commandTypes: ["stop"] });
+  assert.equal(stopCommand.type, "stop");
+  assert.equal(stopCommand.appThreadId, "thr_sync_cancel");
+  assert.equal(stopCommand.activeTurnId, "turn_sync_cancel");
+  assert.equal(stopCommand.payload.reason, "stop sync backend");
+
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      session.id,
+      [
+        {
+          type: "turn.interrupted",
+          text: "Claude Code turn interrupted from mobile.",
+          appThreadId: "thr_sync_cancel",
+          activeTurnId: "turn_sync_cancel",
+          clearActiveTurnId: true,
+          sessionStatus: "active",
+          raw: { method: "turn/interrupt", threadId: "thr_sync_cancel", turnId: "turn_sync_cancel" }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+  assert.equal(
+    queue.completeCodexSessionCommand(stopCommand.id, { ok: true, appThreadId: "thr_sync_cancel", sessionStatus: "active" }, { agentId: agent.id }),
+    true
+  );
+
+  const completed = queue.getCodexSession(session.id);
+  assert.equal(completed.status, "active");
+  assert.equal(completed.activeTurnId, null);
+  assert.equal(completed.pendingCommandCount, 0);
+  assert.equal(completed.leasedCommandCount, 0);
+  assert.equal(completed.queuedCommandCount, 0);
+
+  const interrupted = db.prepare("SELECT status, error FROM codex_session_commands WHERE id = ?").get(startCommand.id);
+  assert.equal(interrupted.status, "failed");
+  assert.match(interrupted.error, /stop sync backend/);
+  assert.equal(
+    queue.completeCodexSessionCommand(startCommand.id, { ok: true, appThreadId: "thr_sync_cancel", sessionStatus: "active" }, { agentId: agent.id }),
+    false
+  );
+});
+
 test("plan mode keeps the visible and queued user message clean", async () => {
   store.resetStoreForTest();
 
@@ -2426,7 +5554,24 @@ test("plan mode keeps the visible and queued user message clean", async () => {
   assert.equal(command.payload.prompt, "分析一下怎么改这个功能");
 
   const detail = queue.getCodexSession(created.id);
+  assert.equal(detail.composerMode, "plan");
   assert.equal(detail.messages[0].text, "分析一下怎么改这个功能");
+
+  queue.enqueueCodexSessionMessage(created.id, {
+    projectId: "demo",
+    text: "现在退出计划模式并执行",
+    mode: "execute"
+  });
+
+  const updated = queue.getCodexSession(created.id);
+  assert.equal(updated.composerMode, "execute");
+
+  queue.completeCodexSessionCommand(command.id, { ok: true, appThreadId: "thr_plan", sessionStatus: "active" }, { agentId: agent.id });
+  const followUpCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(followUpCommand.type, "message");
+  assert.equal(followUpCommand.payload.mode, "execute");
+  assert.equal(followUpCommand.payload.previousComposerMode, "plan");
+  assert.equal(followUpCommand.payload.hasPriorPlanMode, true);
 });
 
 test("mobile workspace commands create and advertise managed workspaces", async () => {
@@ -2476,6 +5621,101 @@ test("mobile workspace commands create and advertise managed workspaces", async 
   assert.equal(completed.result.workspace.id, workspace.id);
   assert.equal(queue.codexStatus().workspaces.some((item) => item.id === workspace.id), true);
   assert.equal(runner.publicWorkspaces().some((item) => item.id === workspace.id), true);
+});
+
+test("project visibility hides desktop-advertised workspaces per user without deleting sessions", () => {
+  store.resetStoreForTest();
+
+  const alice = { username: "alice", role: "owner" };
+  queue.updateCodexAgent({
+    id: "alice-mac",
+    ownerUser: "alice",
+    workspaces: [{ id: "echo", label: "Echo", path: "/workspace/echo" }],
+    runtime: { command: "codex" }
+  });
+  const session = queue.createCodexSession({
+    projectId: "echo",
+    targetAgentId: "alice-mac",
+    ownerUser: "alice",
+    prompt: "keep history"
+  });
+
+  const visibleStatus = queue.codexStatus({ user: alice });
+  assert.deepEqual(visibleStatus.workspaces.map((workspace) => workspace.key), ["alice-mac:echo"]);
+
+  const visibility = queue.updateCodexWorkspaceVisibility({
+    workspaceId: "echo",
+    targetAgentId: "alice-mac",
+    ownerUser: "alice",
+    visible: false,
+    user: alice
+  });
+  assert.equal(visibility.visibleInSidebar, false);
+
+  const hiddenStatus = queue.codexStatus({ user: alice });
+  assert.deepEqual(hiddenStatus.workspaces, []);
+  assert.deepEqual(hiddenStatus.hiddenWorkspaceKeys, ["alice-mac:echo"]);
+  assert.equal(queue.getCodexSession(session.id, { user: alice })?.id, session.id);
+});
+
+test("workspace register commands carry only root id and bounded relative path", async () => {
+  store.resetStoreForTest();
+
+  const alice = { username: "alice", role: "owner" };
+  queue.updateCodexAgent({
+    id: "alice-mac",
+    ownerUser: "alice",
+    workspaces: [{ id: "echo", label: "Echo", path: "/workspace/echo" }],
+    runtime: { command: "codex" }
+  });
+
+  assert.throws(
+    () =>
+      queue.createCodexWorkspaceRegister({
+        rootId: "root-a",
+        path: "../escape",
+        targetAgentId: "alice-mac",
+        ownerUser: "alice",
+        user: alice
+      }),
+    /stay inside/
+  );
+
+  const command = queue.createCodexWorkspaceRegister({
+    rootId: "root-a",
+    path: "team/echo",
+    targetAgentId: "alice-mac",
+    ownerUser: "alice",
+    user: alice
+  });
+  assert.equal(command.type, "register");
+  assert.deepEqual(command.payload, {
+    rootId: "root-a",
+    path: "team/echo",
+    requestedBy: "mobile"
+  });
+
+  const leased = await queue.waitForCodexWorkspaceCommand({
+    waitMs: 1000,
+    agent: { id: "alice-mac", workspaces: [{ id: "echo", path: "/workspace/echo" }] }
+  });
+  assert.equal(leased.id, command.id);
+  assert.equal(leased.type, "register");
+});
+
+test("MCP apply commands request desktop agent restart by default", () => {
+  store.resetStoreForTest();
+
+  const restartCommand = queue.createCodexMcpApply({ profileId: "memory", targetClients: ["codex"], requestedBy: "mobile" });
+  assert.equal(restartCommand.payload.restartDesktopAgent, true);
+
+  const noRestartCommand = queue.createCodexMcpApply({
+    profileId: "memory",
+    targetClients: ["codex"],
+    requestedBy: "mobile",
+    restartDesktopAgent: false
+  });
+  assert.equal(noRestartCommand.payload.restartDesktopAgent, false);
 });
 
 test("file browser requests are short-lived and scoped to advertised workspaces", async () => {
@@ -2532,23 +5772,6 @@ test("file browser requests are short-lived and scoped to advertised workspaces"
   const completed = await queue.waitForCodexFileRequestResult(created.id, { waitMs: 1000 });
   assert.equal(completed.status, "done");
   assert.equal(completed.result.tree.path, "src");
-
-  const openSpecRequest = queue.createCodexFileRequest({
-    type: "open-spec-summary",
-    projectId: "demo",
-    path: "../outside",
-    maxChanges: 999,
-    maxSpecs: 999
-  });
-  assert.equal(openSpecRequest.path, "");
-  assert.equal(openSpecRequest.payload.path, "");
-  assert.equal(openSpecRequest.payload.maxChanges, 200);
-  assert.equal(openSpecRequest.payload.maxSpecs, 240);
-
-  const leasedOpenSpecRequest = await queue.waitForCodexFileRequest({ waitMs: 1000, agent });
-  assert.equal(leasedOpenSpecRequest.id, openSpecRequest.id);
-  assert.equal(leasedOpenSpecRequest.type, "open-spec-summary");
-  assert.equal(leasedOpenSpecRequest.path, "");
 });
 
 test("interactive Codex sessions can be archived and restored", async () => {
@@ -2571,7 +5794,248 @@ test("interactive Codex sessions can be archived and restored", async () => {
   assert.equal(queue.listCodexSessions(10).some((item) => item.id === session.id), false);
   assert.equal(queue.listCodexSessions(10, { archived: true }).some((item) => item.id === session.id), true);
 
+  const archiveCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(archiveCommand.type, "archive");
+  assert.equal(archiveCommand.appThreadId, "thr_archive");
+  assert.equal(archiveCommand.payload.archived, true);
+  assert.throws(
+    () => queue.archiveCodexSession(session.id, { archived: false }),
+    /pending session command/
+  );
+  queue.completeCodexSessionCommand(
+    archiveCommand.id,
+    { ok: true, appThreadId: "thr_archive", sessionStatus: "active" },
+    { agentId: agent.id }
+  );
+
   const restored = queue.archiveCodexSession(session.id, { archived: false });
   assert.equal(restored.archivedAt, null);
   assert.equal(queue.listCodexSessions(10).some((item) => item.id === session.id), true);
+
+  const restoreCommand = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(restoreCommand.type, "archive");
+  assert.equal(restoreCommand.appThreadId, "thr_archive");
+  assert.equal(restoreCommand.payload.archived, false);
+  queue.completeCodexSessionCommand(
+    restoreCommand.id,
+    { ok: true, appThreadId: "thr_archive", sessionStatus: "active" },
+    { agentId: agent.id }
+  );
+});
+
+test("archived interactive Codex sessions can be deleted with stored files cleaned up", async () => {
+  store.resetStoreForTest();
+
+  const agent = {
+    id: "delete-archive-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: { command: "fake-codex" }
+  };
+  queue.updateCodexAgent(agent);
+
+  const session = queue.createCodexSession({
+    projectId: "demo",
+    prompt: "删除这个归档会话",
+    attachments: [{ type: "image", url: "data:image/png;base64,AAAA", name: "screen.png", mimeType: "image/png", sizeBytes: 4 }]
+  });
+  const attachmentId = queue.getCodexSession(session.id).messages[0].attachments[0].id;
+  const attachmentPath = queue.getCodexSessionAttachmentContent(attachmentId).filePath;
+  assert.equal(fs.existsSync(attachmentPath), true);
+
+  assert.throws(
+    () => queue.deleteCodexSession(session.id),
+    /Archive this session before deleting it/
+  );
+
+  const command = await queue.waitForCodexSessionCommand({ waitMs: 1000, agent });
+  assert.equal(command.sessionId, session.id);
+  const pngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+  assert.equal(
+    queue.appendCodexSessionEvents(
+      session.id,
+      [
+        {
+          type: "item/completed",
+          text: "stored image",
+          raw: {
+            method: "item/completed",
+            params: {
+              item: {
+                id: "delete-archive-image",
+                type: "agentMessage",
+                content: [{ type: "image_url", image_url: { url: `data:image/png;base64,${pngBase64}` } }]
+              }
+            }
+          }
+        }
+      ],
+      { agentId: agent.id }
+    ),
+    true
+  );
+  assert.equal(queue.completeCodexSessionCommand(command.id, { ok: true, sessionStatus: "active" }, { agentId: agent.id }), true);
+
+  const artifactId = queue.getCodexSession(session.id).artifacts[0].id;
+  const artifactPath = queue.getCodexSessionArtifactContent(artifactId).filePath;
+  assert.equal(fs.existsSync(artifactPath), true);
+
+  assert.equal(queue.archiveCodexSession(session.id, { archived: true }).archivedAt.length > 0, true);
+  const deleted = queue.deleteCodexSession(session.id);
+  assert.equal(deleted.deleted, true);
+  assert.equal(deleted.attachmentCount, 1);
+  assert.equal(deleted.artifactCount, 1);
+  assert.equal(queue.getCodexSession(session.id), null);
+  assert.equal(queue.listCodexSessions(10, { archived: true }).some((item) => item.id === session.id), false);
+  assert.equal(queue.getCodexSessionAttachmentContent(attachmentId), null);
+  assert.equal(queue.getCodexSessionArtifactContent(artifactId), null);
+  assert.equal(fs.existsSync(attachmentPath), false);
+  assert.equal(fs.existsSync(artifactPath), false);
+});
+
+test("Workspace runtime preferences are isolated by user, desktop, and Workspace", () => {
+  store.resetStoreForTest();
+  for (const id of ["preference-agent-a", "preference-agent-b"]) {
+    queue.updateCodexAgent({
+      id,
+      workspaces: [
+        { id: "alpha", path: process.cwd() },
+        { id: "beta", path: process.cwd() }
+      ],
+      runtime: {
+        backendId: "codex",
+        provider: "codex",
+        worktreeMode: "optional",
+        supportedModels: [{ id: "gpt-5.5", supportedReasoningEfforts: ["high"] }]
+      }
+    });
+  }
+
+  const created = queue.updateCodexWorkspaceRuntimePreference({
+    ownerUser: "alice",
+    targetAgentId: "preference-agent-a",
+    workspaceId: "alpha",
+    version: 0,
+    preference: {
+      backendId: "codex",
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      permissionMode: "full",
+      worktreeMode: "always"
+    }
+  }).preference;
+
+  assert.equal(created.version, 1);
+  assert.equal(created.permissionMode, "full");
+  assert.equal(queue.getCodexWorkspaceRuntimePreference({ ownerUser: "alice", targetAgentId: "preference-agent-a", workspaceId: "alpha" }).version, 1);
+  assert.equal(queue.getCodexWorkspaceRuntimePreference({ ownerUser: "bob", targetAgentId: "preference-agent-a", workspaceId: "alpha" }), null);
+  assert.equal(queue.getCodexWorkspaceRuntimePreference({ ownerUser: "alice", targetAgentId: "preference-agent-b", workspaceId: "alpha" }), null);
+  assert.equal(queue.getCodexWorkspaceRuntimePreference({ ownerUser: "alice", targetAgentId: "preference-agent-a", workspaceId: "beta" }), null);
+
+  const session = queue.createCodexSession({
+    ownerUser: "alice",
+    targetAgentId: "preference-agent-a",
+    projectId: "alpha",
+    prompt: "use saved settings",
+    runtime: {}
+  });
+  assert.equal(session.runtime.permissionMode, "full");
+  assert.equal(session.runtime.sandbox, "danger-full-access");
+  assert.equal(session.runtime.approvalPolicy, "never");
+  assert.equal(session.runtime.worktreeMode, "always");
+
+  const updated = queue.updateCodexWorkspaceRuntimePreference({
+    ownerUser: "alice",
+    targetAgentId: "preference-agent-a",
+    workspaceId: "alpha",
+    version: created.version,
+    preference: { backendId: "codex", permissionMode: "strict", worktreeMode: "off" }
+  }).preference;
+  const continued = queue.enqueueCodexSessionMessage(session.id, {
+    text: "continue with Workspace settings",
+    runtime: { backendId: "codex", permissionMode: "full", worktreeMode: "always" }
+  });
+  assert.equal(updated.permissionMode, "strict");
+  assert.equal(continued.runtime.permissionMode, "strict");
+  assert.equal(continued.runtime.sandbox, "read-only");
+  assert.equal(continued.runtime.worktreeMode, "off");
+});
+
+test("Workspace runtime preference updates reject stale versions and migration never overwrites Relay state", () => {
+  store.resetStoreForTest();
+  queue.updateCodexAgent({
+    id: "preference-conflict-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: { backendId: "codex", provider: "codex", worktreeMode: "off" }
+  });
+  const scope = { ownerUser: "alice", targetAgentId: "preference-conflict-agent", workspaceId: "demo" };
+  const first = queue.updateCodexWorkspaceRuntimePreference({
+    ...scope,
+    version: 0,
+    preference: { backendId: "codex", permissionMode: "approve", worktreeMode: "off" }
+  }).preference;
+  const second = queue.updateCodexWorkspaceRuntimePreference({
+    ...scope,
+    version: first.version,
+    preference: { backendId: "codex", permissionMode: "full", worktreeMode: "off" }
+  }).preference;
+
+  assert.throws(
+    () => queue.updateCodexWorkspaceRuntimePreference({
+      ...scope,
+      version: first.version,
+      preference: { backendId: "codex", permissionMode: "strict", worktreeMode: "off" }
+    }),
+    (error) => error.statusCode === 409 && error.code === "runtime.preference.version_conflict" && error.preference.version === second.version
+  );
+
+  const migration = queue.updateCodexWorkspaceRuntimePreference({
+    ...scope,
+    version: 0,
+    migration: true,
+    migrationCandidate: { backendId: "codex", permissionMode: "strict", worktreeMode: "off" }
+  });
+  assert.equal(migration.migrated, false);
+  assert.equal(migration.preference.permissionMode, "full");
+  assert.equal(migration.preference.version, second.version);
+});
+
+test("Relay rejects unsupported runtime selections instead of changing backend, model, or permission", () => {
+  store.resetStoreForTest();
+  queue.updateCodexAgent({
+    id: "strict-runtime-agent",
+    workspaces: [{ id: "demo", path: process.cwd() }],
+    runtime: {
+      backendId: "codex",
+      provider: "codex",
+      supportedModels: [{ id: "gpt-5.5", supportedReasoningEfforts: ["high"] }],
+      backends: [
+        {
+          backendId: "codex",
+          provider: "codex",
+          supportedModels: [{ id: "gpt-5.5", supportedReasoningEfforts: ["high"] }]
+        },
+        {
+          backendId: "limited",
+          provider: "custom-runtime",
+          supportedPermissionModes: ["strict"],
+          supportedModels: [{ id: "limited-model" }]
+        }
+      ]
+    }
+  });
+  const base = { ownerUser: "alice", targetAgentId: "strict-runtime-agent", workspaceId: "demo", version: 0 };
+
+  assert.throws(
+    () => queue.updateCodexWorkspaceRuntimePreference({ ...base, preference: { backendId: "missing", permissionMode: "full" } }),
+    (error) => error.code === "runtime.backend.unsupported"
+  );
+  assert.throws(
+    () => queue.updateCodexWorkspaceRuntimePreference({ ...base, preference: { backendId: "codex", model: "limited-model", permissionMode: "full" } }),
+    (error) => error.code === "runtime.model.unsupported"
+  );
+  assert.throws(
+    () => queue.updateCodexWorkspaceRuntimePreference({ ...base, preference: { backendId: "limited", model: "limited-model", permissionMode: "full" } }),
+    (error) => error.code === "runtime.permission.unsupported"
+  );
 });

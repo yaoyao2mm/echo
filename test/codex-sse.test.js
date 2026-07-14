@@ -24,6 +24,8 @@ test("Codex session SSE streams partial updates after the initial snapshot", asy
       ECHO_MODE: "relay",
       ECHO_PUBLIC_URL: baseUrl,
       ECHO_TOKEN: token,
+      ECHO_AGENT_TOKEN: "",
+      ECHO_AGENT_TOKEN_SHA256: "",
       ECHO_AUTH_ENABLED: "false",
       ECHO_CODEX_WORKSPACES: `echo=${process.cwd()}`
     },
@@ -131,6 +133,9 @@ test("Codex session SSE streams partial updates after the initial snapshot", asy
           finalMessage: "resumed",
           raw: {
             method: "item/agentMessage/delta",
+            authorization: "Bearer sse-secret-value",
+            env: { PRIVATE_TOKEN: "sse-env-secret-value" },
+            oversized: "x".repeat(120000),
             params: {
               threadId: "thr_sse_test",
               turnId: "turn_sse_test",
@@ -161,6 +166,11 @@ test("Codex session SSE streams partial updates after the initial snapshot", asy
   assert.equal(resumed.session.id, sessionId);
   assert.equal(resumed.session.events.length, 1);
   assert.equal(resumed.session.events[0].type, "item/agentMessage/delta");
+  assert.equal(resumed.session.events[0].raw.redacted, true);
+  assert.equal(resumed.session.events[0].raw.truncated, true);
+  assert.equal(JSON.stringify(resumed.session.events[0]).includes("sse-secret-value"), false);
+  assert.equal(JSON.stringify(resumed.session.events[0]).includes("sse-env-secret-value"), false);
+  assert.equal(stderr.includes("sse-secret-value"), false);
   assert.ok(resumed.session.events[0].id > update.lastEventId);
   await resumedReader.cancel().catch(() => {});
 
@@ -216,12 +226,117 @@ test("Codex session SSE streams partial updates after the initial snapshot", asy
   assert.ok(backlogPages[1].lastEventId > backlogPages[0].lastEventId);
 });
 
+test("relay uses per-agent tokens and scopes agent heartbeat status", async (t) => {
+  const port = await freePort();
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "echo-agent-token-"));
+  const phoneToken = "phone-pairing-token";
+  const aliceToken = "alice-agent-token";
+  const bobToken = "bob-agent-token";
+  const baseUrl = `http://127.0.0.1:${port}`;
+  let stderr = "";
+
+  const child = spawn(process.execPath, ["src/server.js", "--relay"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HOME: tempHome,
+      ECHO_HOST: "127.0.0.1",
+      ECHO_PORT: String(port),
+      ECHO_MODE: "relay",
+      ECHO_PUBLIC_URL: baseUrl,
+      ECHO_TOKEN: phoneToken,
+      ECHO_AUTH_ENABLED: "false",
+      ECHO_AGENT_TOKENS_JSON: JSON.stringify([
+        { token: aliceToken, ownerUsername: "alice", agentId: "alice-mac", displayName: "Alice Mac" },
+        { token: bobToken, ownerUsername: "bob", agentId: "bob-pc", displayName: "Bob PC" }
+      ])
+    },
+    stdio: ["ignore", "ignore", "pipe"]
+  });
+
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+  t.after(() => {
+    child.kill();
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  await waitForServer(baseUrl, () => stderr);
+
+  const rejected = await fetch(`${baseUrl}/api/agent/codex/heartbeat`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Echo-Token": phoneToken
+    },
+    body: JSON.stringify({
+      agentId: "alice-mac",
+      workspaces: [{ id: "echo", label: "Echo", path: "/alice/echo" }]
+    })
+  });
+  assert.equal(rejected.status, 401);
+
+  const aliceHeartbeat = await agentJson(baseUrl, aliceToken, "/api/agent/codex/heartbeat", {
+    method: "POST",
+    body: {
+      agentId: "forged-bob-pc",
+      workspaces: [{ id: "echo", label: "Echo", path: "/alice/echo" }],
+      runtime: { command: "fake-codex" }
+    }
+  });
+  assert.equal(aliceHeartbeat.agent.id, "alice-mac");
+  assert.deepEqual(aliceHeartbeat.codex.workspaces.map((workspace) => workspace.key), ["alice-mac:echo"]);
+
+  const aliceLightweightEvent = await agentJson(baseUrl, aliceToken, "/api/agent/codex/sessions/events", {
+    method: "POST",
+    body: {
+      id: "missing-session",
+      events: []
+    }
+  });
+  assert.equal(aliceLightweightEvent.ok, false);
+
+  const aliceAfterEvent = await agentJson(baseUrl, aliceToken, "/api/agent/ping");
+  assert.deepEqual(aliceAfterEvent.codex.workspaces.map((workspace) => workspace.key), ["alice-mac:echo"]);
+
+  await agentJson(baseUrl, bobToken, "/api/agent/codex/heartbeat", {
+    method: "POST",
+    body: {
+      workspaces: [{ id: "echo", label: "Echo", path: "/bob/echo" }],
+      runtime: { command: "fake-codex" }
+    }
+  });
+
+  const alicePing = await agentJson(baseUrl, aliceToken, "/api/agent/ping");
+  assert.deepEqual(alicePing.codex.agents.map((agent) => agent.id), ["alice-mac"]);
+  assert.deepEqual(alicePing.codex.workspaces.map((workspace) => workspace.key), ["alice-mac:echo"]);
+
+  const bobPing = await agentJson(baseUrl, bobToken, "/api/agent/ping");
+  assert.deepEqual(bobPing.codex.agents.map((agent) => agent.id), ["bob-pc"]);
+  assert.deepEqual(bobPing.codex.workspaces.map((workspace) => workspace.key), ["bob-pc:echo"]);
+});
+
 async function apiJson(baseUrl, token, pathName, options = {}) {
   const response = await fetch(`${baseUrl}${pathName}`, {
     method: options.method || "GET",
     headers: {
       "Content-Type": "application/json",
       "X-Echo-Token": token
+    },
+    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+  });
+  const data = await response.json().catch(() => ({}));
+  assert.equal(response.ok, true, data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+async function agentJson(baseUrl, token, pathName, options = {}) {
+  const response = await fetch(`${baseUrl}${pathName}`, {
+    method: options.method || "GET",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Echo-Agent-Token": token
     },
     body: options.body === undefined ? undefined : JSON.stringify(options.body)
   });

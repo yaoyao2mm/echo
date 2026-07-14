@@ -7,8 +7,8 @@
 
 ## 2. Relay And Desktop Request Flow
 
-- [x] 2.1 Add a mobile API for requesting the current workspace OpenSpec summary with `projectId`.
-- [x] 2.2 Route the request through the desktop agent using the same workspace allowlist constraints as file browsing.
+- [x] 2.1 Add a mobile API for requesting the current workspace OpenSpec summary with `projectId` and `targetAgentId`.
+- [x] 2.2 Route the request through the desktop agent using the same ownership and target-agent constraints as file browsing.
 - [x] 2.3 Return unavailable, stale, timeout, and parser-error states in a shape the PWA can render.
 
 ## 3. Mobile PWA UI

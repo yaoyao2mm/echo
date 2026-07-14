@@ -39,7 +39,7 @@ export function createSessionToken({ user, secret, ttlMs }) {
   return `${SESSION_PREFIX}.${encodedPayload}.${sign(encodedPayload, secret)}`;
 }
 
-export function verifySessionToken({ token, users, secret }) {
+export function verifySessionToken({ token, users, secret, notBeforeMs = 0, notBeforeMsByUser = null }) {
   const parts = String(token || "").split(".");
   if (parts.length !== 3 || parts[0] !== SESSION_PREFIX) return null;
 
@@ -55,6 +55,10 @@ export function verifySessionToken({ token, users, secret }) {
 
   if (!payload?.username || !payload?.exp || Date.now() > payload.exp) return null;
   const user = findUser(users, payload.username);
+  if (!user || user.disabledAt) return null;
+  const userNotBeforeMs = typeof notBeforeMsByUser === "function" ? Number(notBeforeMsByUser(user.username) || 0) : 0;
+  const effectiveNotBeforeMs = Math.max(Number(notBeforeMs || 0) || 0, userNotBeforeMs);
+  if (effectiveNotBeforeMs > 0 && Number(payload.iat || 0) < effectiveNotBeforeMs) return null;
   return user ? publicUser(user) : null;
 }
 

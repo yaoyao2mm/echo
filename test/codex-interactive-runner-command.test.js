@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -47,10 +47,11 @@ rl.on("line", (line) => {
   fs.writeFileSync(fakeShellPath, "#!/usr/bin/env bash\necho shell-codex-invoked >&2\nexit 97\n", "utf8");
   fs.chmodSync(fakeShellPath, 0o755);
 
-  const script = `
+const script = `
 import assert from "node:assert/strict";
 
 process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
 process.env.ECHO_MODE = "relay";
 process.env.ECHO_TOKEN = "test-token";
 process.env.ECHO_RELAY_URL = "https://example.test";
@@ -72,7 +73,7 @@ try {
   assert.equal(result.ok, true);
   assert.equal(runtime.client.command, ${JSON.stringify(fakeAppPath)});
 } finally {
-  runtime.stop();
+  await runtime.stop();
 }
 `;
 
@@ -84,6 +85,106 @@ try {
       ...process.env,
       PATH: `${fakeShellDir}:${process.env.PATH || ""}`
     }
+  });
+
+  assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join("\n"));
+});
+
+test("CodexInteractiveRuntime archives and restores native Codex threads", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-runtime-archive-"));
+  const homePath = path.join(tempRoot, "home");
+  const workspacePath = path.join(tempRoot, "workspace");
+  const fakeCodexPath = path.join(tempRoot, "fake-codex-app");
+  const recordPath = path.join(tempRoot, "archive-methods.jsonl");
+
+  fs.mkdirSync(homePath, { recursive: true });
+  fs.mkdirSync(workspacePath, { recursive: true });
+  fs.writeFileSync(
+    fakeCodexPath,
+    `#!/usr/bin/env node
+import fs from "node:fs";
+import readline from "node:readline";
+
+const rl = readline.createInterface({ input: process.stdin });
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+const recordPath = ${JSON.stringify(recordPath)};
+
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    send({ id: message.id, result: { userAgent: "fake", codexHome: "/tmp/codex", platformFamily: "unix", platformOs: "macos" } });
+    return;
+  }
+  if (message.method === "initialized") return;
+  if (message.method === "thread/archive") {
+    fs.appendFileSync(recordPath, JSON.stringify({ method: message.method, params: message.params }) + "\\n");
+    send({ id: message.id, result: {} });
+    send({ method: "thread/archived", params: { threadId: message.params.threadId } });
+    return;
+  }
+  if (message.method === "thread/unarchive") {
+    fs.appendFileSync(recordPath, JSON.stringify({ method: message.method, params: message.params }) + "\\n");
+    send({ id: message.id, result: { thread: { id: message.params.threadId, sessionId: "sess", preview: "", ephemeral: false, modelProvider: "openai", createdAt: 1, updatedAt: 2, status: "idle", turns: [] } } });
+    send({ method: "thread/unarchived", params: { threadId: message.params.threadId } });
+  }
+});
+`,
+    "utf8"
+  );
+  fs.chmodSync(fakeCodexPath, 0o755);
+
+  const script = `
+import assert from "node:assert/strict";
+import fs from "node:fs";
+
+process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
+process.env.ECHO_MODE = "relay";
+process.env.ECHO_TOKEN = "test-token";
+process.env.ECHO_RELAY_URL = "https://example.test";
+process.env.ECHO_CODEX_COMMAND = ${JSON.stringify(fakeCodexPath)};
+process.env.ECHO_CODEX_APP_PATH = ${JSON.stringify(fakeCodexPath)};
+process.env.ECHO_CODEX_WORKSPACES = ${JSON.stringify(`demo=${workspacePath}`)};
+fs.mkdirSync(${JSON.stringify(path.join(homePath, ".codex"))}, { recursive: true });
+fs.writeFileSync(${JSON.stringify(path.join(homePath, ".codex", "config.toml"))}, 'model = "gpt-5.4"\\nmodel_reasoning_effort = "low"\\n', "utf8");
+
+const { CodexInteractiveRuntime } = await import(${JSON.stringify(path.join(process.cwd(), "src/lib/codexInteractiveRunner.js"))});
+
+const events = [];
+const runtime = new CodexInteractiveRuntime({ onEvents: async (sessionId, incoming) => events.push(...incoming.map((event) => ({ ...event, sessionId }))) });
+try {
+  const archived = await runtime.handleCommand({
+    sessionId: "session-archive",
+    type: "archive",
+    projectId: "demo",
+    appThreadId: "thr_archive",
+    payload: { archived: true },
+    runtime: {}
+  });
+  const restored = await runtime.handleCommand({
+    sessionId: "session-archive",
+    type: "archive",
+    projectId: "demo",
+    appThreadId: "thr_archive",
+    payload: { archived: false },
+    runtime: {}
+  });
+  assert.equal(archived.ok, true);
+  assert.equal(restored.ok, true);
+  const calls = fs.readFileSync(${JSON.stringify(recordPath)}, "utf8").trim().split("\\n").map((line) => JSON.parse(line));
+  assert.deepEqual(calls.map((call) => call.method), ["thread/archive", "thread/unarchive"]);
+  assert.deepEqual(calls.map((call) => call.params.threadId), ["thr_archive", "thr_archive"]);
+  assert.equal(events.some((event) => event.type === "thread.archived"), true);
+  assert.equal(events.some((event) => event.type === "thread.unarchived"), true);
+} finally {
+  runtime.stop();
+}
+`;
+
+  const result = spawnSync(process.execPath, ["--input-type=module", "-"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    input: script
   });
 
   assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join("\n"));
@@ -138,12 +239,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
 process.env.ECHO_MODE = "relay";
 process.env.ECHO_TOKEN = "test-token";
 process.env.ECHO_RELAY_URL = "https://example.test";
 process.env.ECHO_CODEX_COMMAND = ${JSON.stringify(fakeCodexPath)};
 process.env.ECHO_CODEX_APP_PATH = ${JSON.stringify(fakeCodexPath)};
 process.env.ECHO_CODEX_WORKSPACES = ${JSON.stringify(`demo=${workspacePath}`)};
+fs.mkdirSync(${JSON.stringify(path.join(homePath, ".codex"))}, { recursive: true });
+fs.writeFileSync(${JSON.stringify(path.join(homePath, ".codex", "config.toml"))}, 'model = "gpt-5.4"\\nmodel_reasoning_effort = "low"\\n', "utf8");
 
 const { CodexInteractiveRuntime } = await import(${JSON.stringify(path.join(process.cwd(), "src/lib/codexInteractiveRunner.js"))});
 
@@ -164,6 +268,214 @@ try {
   assert.equal(params.collaborationMode.settings.model, "gpt-5.4");
   assert.equal(params.collaborationMode.settings.reasoning_effort, "medium");
   assert.equal(params.collaborationMode.settings.developer_instructions, null);
+} finally {
+  runtime.stop();
+}
+`;
+
+  const result = spawnSync(process.execPath, ["--input-type=module", "-"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    input: script
+  });
+
+  assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join("\n"));
+});
+
+test("CodexInteractiveRuntime applies relay-controlled retry model and effort overrides", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-runtime-retry-override-"));
+  const homePath = path.join(tempRoot, "home");
+  const workspacePath = path.join(tempRoot, "workspace");
+  const fakeCodexPath = path.join(tempRoot, "fake-codex-app");
+  const recordPath = path.join(tempRoot, "turn-start.json");
+
+  fs.mkdirSync(homePath, { recursive: true });
+  fs.mkdirSync(workspacePath, { recursive: true });
+  fs.writeFileSync(
+    fakeCodexPath,
+    `#!/usr/bin/env node
+import fs from "node:fs";
+import readline from "node:readline";
+
+const rl = readline.createInterface({ input: process.stdin });
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    send({ id: message.id, result: { userAgent: "fake", codexHome: "/tmp/codex", platformFamily: "unix", platformOs: "macos" } });
+    return;
+  }
+  if (message.method === "initialized") return;
+  if (message.method === "thread/start") {
+    send({ id: message.id, result: { thread: { id: "thr_retry_override", preview: "", ephemeral: false, modelProvider: "openai", createdAt: 1, cwd: message.params.cwd } } });
+    return;
+  }
+  if (message.method === "turn/start") {
+    fs.writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify(message.params), "utf8");
+    const turn = { id: "turn_retry_override", items: [], status: "inProgress", error: null, startedAt: 1, completedAt: null, durationMs: null };
+    send({ id: message.id, result: { turn } });
+  }
+});
+`,
+    "utf8"
+  );
+  fs.chmodSync(fakeCodexPath, 0o755);
+
+  const script = `
+import assert from "node:assert/strict";
+import fs from "node:fs";
+
+process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
+process.env.ECHO_MODE = "relay";
+process.env.ECHO_TOKEN = "test-token";
+process.env.ECHO_RELAY_URL = "https://example.test";
+process.env.ECHO_CODEX_COMMAND = ${JSON.stringify(fakeCodexPath)};
+process.env.ECHO_CODEX_APP_PATH = ${JSON.stringify(fakeCodexPath)};
+process.env.ECHO_CODEX_WORKSPACES = ${JSON.stringify(`demo=${workspacePath}`)};
+fs.mkdirSync(${JSON.stringify(path.join(homePath, ".codex"))}, { recursive: true });
+fs.writeFileSync(${JSON.stringify(path.join(homePath, ".codex", "config.toml"))}, 'model = "gpt-5.4"\\nmodel_reasoning_effort = "high"\\n', "utf8");
+
+const { CodexInteractiveRuntime } = await import(${JSON.stringify(path.join(process.cwd(), "src/lib/codexInteractiveRunner.js"))});
+
+const runtime = new CodexInteractiveRuntime();
+try {
+  const result = await runtime.handleCommand({
+    sessionId: "session-retry-override",
+    type: "start",
+    projectId: "demo",
+    payload: { prompt: "重试这一次", attachments: [] },
+    runtime: {
+      retryOverride: {
+        model: "gpt-5.4",
+        reasoningEffort: "medium"
+      }
+    }
+  });
+  assert.equal(result.ok, true);
+  const params = JSON.parse(fs.readFileSync(${JSON.stringify(recordPath)}, "utf8"));
+  assert.equal(params.model, "gpt-5.4");
+  assert.equal(params.effort, "medium");
+} finally {
+  runtime.stop();
+}
+`;
+
+  const result = spawnSync(process.execPath, ["--input-type=module", "-"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    input: script
+  });
+
+  assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join("\n"));
+});
+
+test("CodexInteractiveRuntime sends default collaboration mode for execute follow-ups after plan mode", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-runtime-plan-exit-"));
+  const homePath = path.join(tempRoot, "home");
+  const workspacePath = path.join(tempRoot, "workspace");
+  const fakeCodexPath = path.join(tempRoot, "fake-codex-app");
+  const recordPath = path.join(tempRoot, "turn-starts.jsonl");
+
+  fs.mkdirSync(homePath, { recursive: true });
+  fs.mkdirSync(workspacePath, { recursive: true });
+  fs.writeFileSync(
+    fakeCodexPath,
+    `#!/usr/bin/env node
+import fs from "node:fs";
+import readline from "node:readline";
+
+const rl = readline.createInterface({ input: process.stdin });
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+const recordPath = ${JSON.stringify(recordPath)};
+let turnStartCount = 0;
+
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    send({ id: message.id, result: { userAgent: "fake", codexHome: "/tmp/codex", platformFamily: "unix", platformOs: "macos" } });
+    return;
+  }
+  if (message.method === "initialized") return;
+  if (message.method === "collaborationMode/list") {
+    send({
+      id: message.id,
+      result: {
+        data: [
+          { name: "Plan", mode: "plan", reasoning_effort: "medium" },
+          { name: "Default", mode: "default", reasoning_effort: null }
+        ]
+      }
+    });
+    return;
+  }
+  if (message.method === "thread/start") {
+    send({ id: message.id, result: { thread: { id: "thr_plan_exit", preview: "", ephemeral: false, modelProvider: "openai", createdAt: 1, cwd: message.params.cwd } } });
+    return;
+  }
+  if (message.method === "turn/start") {
+    turnStartCount += 1;
+    fs.appendFileSync(recordPath, JSON.stringify(message.params) + "\\n");
+    const turnId = turnStartCount === 1 ? "turn_plan" : "turn_execute";
+    const started = { id: turnId, items: [], status: "inProgress", error: null, startedAt: turnStartCount, completedAt: null, durationMs: null };
+    const completed = { ...started, status: "completed", completedAt: turnStartCount + 1, durationMs: 1 };
+    send({ method: "turn/started", params: { threadId: message.params.threadId, turn: started } });
+    send({ method: "turn/completed", params: { threadId: message.params.threadId, turn: completed } });
+    send({ id: message.id, result: { turn: completed } });
+  }
+});
+`,
+    "utf8"
+  );
+  fs.chmodSync(fakeCodexPath, 0o755);
+
+  const script = `
+import assert from "node:assert/strict";
+import fs from "node:fs";
+
+process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
+process.env.ECHO_MODE = "relay";
+process.env.ECHO_TOKEN = "test-token";
+process.env.ECHO_RELAY_URL = "https://example.test";
+process.env.ECHO_CODEX_COMMAND = ${JSON.stringify(fakeCodexPath)};
+process.env.ECHO_CODEX_APP_PATH = ${JSON.stringify(fakeCodexPath)};
+process.env.ECHO_CODEX_WORKSPACES = ${JSON.stringify(`demo=${workspacePath}`)};
+fs.mkdirSync(${JSON.stringify(path.join(homePath, ".codex"))}, { recursive: true });
+fs.writeFileSync(${JSON.stringify(path.join(homePath, ".codex", "config.toml"))}, 'model = "gpt-5.4"\\nmodel_reasoning_effort = "low"\\n', "utf8");
+
+const { CodexInteractiveRuntime } = await import(${JSON.stringify(path.join(process.cwd(), "src/lib/codexInteractiveRunner.js"))});
+
+const runtime = new CodexInteractiveRuntime();
+try {
+  const started = await runtime.handleCommand({
+    sessionId: "session-plan-exit",
+    type: "start",
+    projectId: "demo",
+    payload: { prompt: "先做计划", attachments: [], mode: "plan" },
+    runtime: { model: "gpt-5.4", reasoningEffort: "low" }
+  });
+  assert.equal(started.ok, true);
+  assert.equal(started.sessionStatus, "active");
+
+  const followed = await runtime.handleCommand({
+    sessionId: "session-plan-exit",
+    type: "message",
+    projectId: "demo",
+    appThreadId: started.appThreadId,
+    payload: { text: "现在退出计划模式并执行", attachments: [], mode: "execute" },
+    runtime: { model: "gpt-5.4", reasoningEffort: "low" }
+  });
+  assert.equal(followed.ok, true);
+
+  const requests = fs.readFileSync(${JSON.stringify(recordPath)}, "utf8").trim().split("\\n").map((line) => JSON.parse(line));
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].collaborationMode.mode, "plan");
+  assert.equal(requests[1].collaborationMode.mode, "default");
+  assert.equal(requests[1].collaborationMode.settings.model, "gpt-5.4");
+  assert.equal(requests[1].collaborationMode.settings.reasoning_effort, "low");
+  assert.equal(requests[1].collaborationMode.settings.developer_instructions, null);
 } finally {
   runtime.stop();
 }
@@ -250,6 +562,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
 process.env.ECHO_MODE = "relay";
 process.env.ECHO_TOKEN = "test-token";
 process.env.ECHO_RELAY_URL = "https://example.test";
@@ -356,6 +669,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 
 process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
 process.env.ECHO_MODE = "relay";
 process.env.ECHO_TOKEN = "test-token";
 process.env.ECHO_RELAY_URL = "https://example.test";
@@ -363,6 +677,7 @@ process.env.ECHO_CODEX_COMMAND = ${JSON.stringify(fakeCodexPath)};
 process.env.ECHO_CODEX_APP_PATH = ${JSON.stringify(fakeCodexPath)};
 process.env.ECHO_CODEX_WORKSPACES = ${JSON.stringify(`configured=${configuredWorkspacePath}`)};
 process.env.ECHO_CODEX_WORKSPACE_ROOT = ${JSON.stringify(workspaceRoot)};
+process.env.ECHO_CODEX_MANAGED_WORKSPACES_FILE = ${JSON.stringify(path.join(tempRoot, "managed-workspaces.json"))};
 
 const manager = await import(${JSON.stringify(path.join(process.cwd(), "src/lib/codexWorkspaceManager.js"))});
 const runner = await import(${JSON.stringify(path.join(process.cwd(), "src/lib/codexRunner.js"))});
@@ -444,6 +759,7 @@ rl.on("line", (line) => {
 import assert from "node:assert/strict";
 
 process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
 process.env.ECHO_MODE = "relay";
 process.env.ECHO_TOKEN = "test-token";
 process.env.ECHO_RELAY_URL = "https://example.test";
@@ -485,6 +801,120 @@ try {
   assert.equal(deltaEvents[0].text, "Hello from Echo");
   assert.equal(deltaEvents[0].raw.params.delta, "Hello from Echo");
   assert.equal(events.findIndex((event) => event.type === "item/agentMessage/delta") < events.findIndex((event) => event.type === "item/completed"), true);
+} finally {
+  runtime.stop();
+}
+`;
+
+  const result = spawnSync(process.execPath, ["--input-type=module", "-"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    input: script
+  });
+
+  assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join("\n"));
+});
+
+test("CodexInteractiveRuntime turns assistant workspace image paths into relay artifact payloads", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-runtime-local-image-artifact-"));
+  const homePath = path.join(tempRoot, "home");
+  const workspacePath = path.join(tempRoot, "workspace");
+  const fakeCodexPath = path.join(tempRoot, "fake-codex-app");
+  const screenshotPath = path.join(workspacePath, "output", "playwright", "latest.png");
+  const tinyPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4//8/AwAI/AL+KDvY8QAAAABJRU5ErkJggg==";
+
+  fs.mkdirSync(homePath, { recursive: true });
+  fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
+  fs.writeFileSync(screenshotPath, Buffer.from(tinyPngBase64, "base64"));
+  fs.writeFileSync(
+    fakeCodexPath,
+    `#!/usr/bin/env node
+import readline from "node:readline";
+
+const rl = readline.createInterface({ input: process.stdin });
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+const screenshotPath = ${JSON.stringify(screenshotPath)};
+
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    send({ id: message.id, result: { userAgent: "fake", codexHome: "/tmp/codex", platformFamily: "unix", platformOs: "macos" } });
+    return;
+  }
+  if (message.method === "initialized") return;
+  if (message.method === "thread/start") {
+    send({ id: message.id, result: { thread: { id: "thr_local_image", preview: "", ephemeral: false, modelProvider: "openai", createdAt: 1, cwd: message.params.cwd } } });
+    return;
+  }
+  if (message.method === "turn/start") {
+    const turn = { id: "turn_local_image", items: [], status: "inProgress", error: null, startedAt: 1, completedAt: null, durationMs: null };
+    const text = \`直接看这张：
+
+![当前对话界面](\${screenshotPath})
+
+文件位置：[latest.png](\${screenshotPath})\`;
+    send({ id: message.id, result: { turn } });
+    send({ method: "turn/started", params: { threadId: message.params.threadId, turn } });
+    send({ method: "item/completed", params: { threadId: message.params.threadId, turnId: turn.id, item: { type: "agentMessage", id: "msg_local_image", text } } });
+    send({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { ...turn, status: "completed", completedAt: 2 } } });
+  }
+});
+`,
+    "utf8"
+  );
+  fs.chmodSync(fakeCodexPath, 0o755);
+
+  const script = `
+import assert from "node:assert/strict";
+
+const screenshotPath = ${JSON.stringify(screenshotPath)};
+
+process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
+process.env.ECHO_MODE = "relay";
+process.env.ECHO_TOKEN = "test-token";
+process.env.ECHO_RELAY_URL = "https://example.test";
+process.env.ECHO_CODEX_COMMAND = ${JSON.stringify(fakeCodexPath)};
+process.env.ECHO_CODEX_APP_PATH = ${JSON.stringify(fakeCodexPath)};
+process.env.ECHO_CODEX_WORKSPACES = ${JSON.stringify(`demo=${workspacePath}`)};
+
+const { CodexInteractiveRuntime } = await import(${JSON.stringify(path.join(process.cwd(), "src/lib/codexInteractiveRunner.js"))});
+
+const events = [];
+let resolveCompleted;
+const completed = new Promise((resolve) => {
+  resolveCompleted = resolve;
+});
+const runtime = new CodexInteractiveRuntime({
+  onEvents: async (_id, batch) => {
+    events.push(...batch);
+    if (batch.some((event) => event.type === "turn/completed")) resolveCompleted();
+  }
+});
+
+try {
+  const result = await runtime.handleCommand({
+    sessionId: "session-local-image",
+    type: "start",
+    projectId: "demo",
+    payload: { prompt: "send me the screenshot", attachments: [] },
+    runtime: {}
+  });
+  assert.equal(result.ok, true);
+  await Promise.race([
+    completed,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("timed out waiting for completion")), 2000))
+  ]);
+
+  const event = events.find((item) => item.type === "item/completed");
+  assert.ok(event);
+  assert.match(event.text, /直接看这张/);
+  assert.equal(event.text.includes(screenshotPath), false);
+  assert.equal(event.raw.params.item.text.includes(screenshotPath), false);
+  assert.equal(event.raw.echoLocalImageArtifacts.length, 1);
+  assert.equal(event.raw.echoLocalImageArtifacts[0].label, "当前对话界面");
+  assert.equal(event.raw.echoLocalImageArtifacts[0].mimeType, "image/png");
+  assert.match(event.raw.echoLocalImageArtifacts[0].dataUrl, /^data:image\\/png;base64,/);
 } finally {
   runtime.stop();
 }
@@ -542,6 +972,7 @@ rl.on("line", (line) => {
 import assert from "node:assert/strict";
 
 process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
 process.env.ECHO_MODE = "relay";
 process.env.ECHO_TOKEN = "test-token";
 process.env.ECHO_RELAY_URL = "https://example.test";
@@ -576,6 +1007,133 @@ try {
     completed,
     new Promise((_, reject) => setTimeout(() => reject(new Error("timed out waiting for completion")), 2000))
   ]);
+} finally {
+  runtime.stop();
+}
+`;
+
+  const result = spawnSync(process.execPath, ["--input-type=module", "-"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    input: script
+  });
+
+  assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join("\n"));
+});
+
+test("CodexInteractiveRuntime only marks explicit context compaction completions terminal", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-runtime-compact-terminal-"));
+  const homePath = path.join(tempRoot, "home");
+  const workspacePath = path.join(tempRoot, "workspace");
+  const fakeCodexPath = path.join(tempRoot, "fake-codex-app");
+
+  fs.mkdirSync(homePath, { recursive: true });
+  fs.mkdirSync(workspacePath, { recursive: true });
+  fs.writeFileSync(
+    fakeCodexPath,
+    `#!/usr/bin/env node
+import readline from "node:readline";
+
+const rl = readline.createInterface({ input: process.stdin });
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+let threadStartCount = 0;
+
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    send({ id: message.id, result: { userAgent: "fake", codexHome: "/tmp/codex", platformFamily: "unix", platformOs: "macos" } });
+    return;
+  }
+  if (message.method === "initialized") return;
+  if (message.method === "thread/start") {
+    threadStartCount += 1;
+    const threadId = threadStartCount === 1 ? "thr_explicit_compact" : "thr_auto_compact";
+    send({ id: message.id, result: { thread: { id: threadId, preview: "", ephemeral: false, modelProvider: "openai", createdAt: 1, cwd: message.params.cwd } } });
+    return;
+  }
+  if (message.method === "thread/compact/start") {
+    send({ id: message.id, result: {} });
+    send({ method: "item/completed", params: { threadId: message.params.threadId, item: { type: "contextCompaction", id: "ctx_explicit" } } });
+    return;
+  }
+  if (message.method === "turn/start") {
+    const turn = { id: "turn_auto_compact", items: [], status: "inProgress", error: null, startedAt: 1, completedAt: null, durationMs: null };
+    send({ id: message.id, result: { turn } });
+    send({ method: "turn/started", params: { threadId: message.params.threadId, turn } });
+    send({ method: "item/completed", params: { threadId: message.params.threadId, turnId: turn.id, item: { type: "contextCompaction", id: "ctx_auto" } } });
+    send({ method: "item/completed", params: { threadId: message.params.threadId, turnId: turn.id, item: { type: "agentMessage", id: "msg_auto", text: "done after compaction" } } });
+    send({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { ...turn, status: "completed", completedAt: 2 } } });
+  }
+});
+`,
+    "utf8"
+  );
+  fs.chmodSync(fakeCodexPath, 0o755);
+
+  const script = `
+import assert from "node:assert/strict";
+
+process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
+process.env.ECHO_MODE = "relay";
+process.env.ECHO_TOKEN = "test-token";
+process.env.ECHO_RELAY_URL = "https://example.test";
+process.env.ECHO_CODEX_COMMAND = ${JSON.stringify(fakeCodexPath)};
+process.env.ECHO_CODEX_APP_PATH = ${JSON.stringify(fakeCodexPath)};
+process.env.ECHO_CODEX_WORKSPACES = ${JSON.stringify(`demo=${workspacePath}`)};
+
+const { CodexInteractiveRuntime } = await import(${JSON.stringify(path.join(process.cwd(), "src/lib/codexInteractiveRunner.js"))});
+
+const events = [];
+const runtime = new CodexInteractiveRuntime({
+  onEvents: async (sessionId, batch) => {
+    events.push(...batch.map((event) => ({ ...event, sessionId })));
+  }
+});
+
+const waitForEvent = async (predicate) => {
+  const started = Date.now();
+  while (Date.now() - started < 2000) {
+    const event = events.find(predicate);
+    if (event) return event;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("timed out waiting for event");
+};
+
+try {
+  await runtime.handleCommand({
+    sessionId: "session-explicit-compact",
+    type: "start",
+    projectId: "demo",
+    payload: { prompt: "", attachments: [] },
+    runtime: {}
+  });
+  await runtime.handleCommand({
+    sessionId: "session-explicit-compact",
+    type: "compact",
+    projectId: "demo",
+    appThreadId: "thr_explicit_compact",
+    payload: {},
+    runtime: {}
+  });
+  const explicit = await waitForEvent((event) => event.raw?.params?.item?.id === "ctx_explicit");
+  assert.equal(explicit.clearActiveTurnId, true);
+  assert.equal(explicit.sessionStatus, "active");
+  assert.equal(explicit.raw.echoExplicitCompactionCommand, true);
+
+  await runtime.handleCommand({
+    sessionId: "session-auto-compact",
+    type: "start",
+    projectId: "demo",
+    payload: { prompt: "auto compact during turn", attachments: [] },
+    runtime: {}
+  });
+  await waitForEvent((event) => event.sessionId === "session-auto-compact" && event.type === "turn/completed");
+  const automatic = events.find((event) => event.raw?.params?.item?.id === "ctx_auto");
+  assert.ok(automatic);
+  assert.equal(Boolean(automatic.clearActiveTurnId), false);
+  assert.equal(automatic.sessionStatus, undefined);
 } finally {
   runtime.stop();
 }
@@ -646,6 +1204,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
 process.env.ECHO_MODE = "relay";
 process.env.ECHO_TOKEN = "test-token";
 process.env.ECHO_RELAY_URL = "https://example.test";
@@ -687,6 +1246,120 @@ try {
   assert.deepEqual(requests.map((request) => request.method), ["thread/resume", "turn/steer", "turn/start"]);
   assert.equal(requests[1].params.expectedTurnId, "turn_old");
   assert.equal(requests[2].params.input[0].text, "结果呢");
+  assert.equal(Object.prototype.hasOwnProperty.call(requests[2].params, "collaborationMode"), false);
+} finally {
+  runtime.stop();
+}
+`;
+
+  const result = spawnSync(process.execPath, ["--input-type=module", "-"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    input: script
+  });
+
+  assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join("\n"));
+});
+
+test("CodexInteractiveRuntime starts a new turn when a compact turn cannot be steered", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-runtime-compact-turn-"));
+  const homePath = path.join(tempRoot, "home");
+  const workspacePath = path.join(tempRoot, "workspace");
+  const fakeCodexPath = path.join(tempRoot, "fake-codex-app");
+  const recordPath = path.join(tempRoot, "requests.json");
+
+  fs.mkdirSync(homePath, { recursive: true });
+  fs.mkdirSync(workspacePath, { recursive: true });
+  fs.writeFileSync(
+    fakeCodexPath,
+    `#!/usr/bin/env node
+import fs from "node:fs";
+import readline from "node:readline";
+
+const rl = readline.createInterface({ input: process.stdin });
+const requests = [];
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+const record = (message) => {
+  requests.push({ method: message.method, params: message.params || {} });
+  fs.writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify(requests), "utf8");
+};
+
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    send({ id: message.id, result: { userAgent: "fake", codexHome: "/tmp/codex", platformFamily: "unix", platformOs: "macos" } });
+    return;
+  }
+  if (message.method === "initialized") return;
+  if (message.method === "thread/resume") {
+    record(message);
+    send({ id: message.id, result: { thread: { id: message.params.threadId, preview: "", ephemeral: false, modelProvider: "openai", createdAt: 1 } } });
+    return;
+  }
+  if (message.method === "turn/steer") {
+    record(message);
+    send({ id: message.id, error: { code: -32603, message: "cannot steer a compact turn" } });
+    return;
+  }
+  if (message.method === "turn/start") {
+    record(message);
+    const turn = { id: "turn_after_compact", items: [], status: "inProgress", error: null, startedAt: 2, completedAt: null, durationMs: null };
+    send({ id: message.id, result: { turn } });
+  }
+});
+`,
+    "utf8"
+  );
+  fs.chmodSync(fakeCodexPath, 0o755);
+
+  const script = `
+import assert from "node:assert/strict";
+import fs from "node:fs";
+
+process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
+process.env.ECHO_MODE = "relay";
+process.env.ECHO_TOKEN = "test-token";
+process.env.ECHO_RELAY_URL = "https://example.test";
+process.env.ECHO_CODEX_COMMAND = ${JSON.stringify(fakeCodexPath)};
+process.env.ECHO_CODEX_APP_PATH = ${JSON.stringify(fakeCodexPath)};
+process.env.ECHO_CODEX_WORKSPACES = ${JSON.stringify(`demo=${workspacePath}`)};
+
+const { CodexInteractiveRuntime } = await import(${JSON.stringify(path.join(process.cwd(), "src/lib/codexInteractiveRunner.js"))});
+
+const events = [];
+const runtime = new CodexInteractiveRuntime({
+  onEvents: async (_id, batch) => {
+    events.push(...batch);
+  }
+});
+
+try {
+  const result = await runtime.handleCommand({
+    sessionId: "session-compact-turn",
+    type: "message",
+    projectId: "demo",
+    appThreadId: "thr_existing",
+    activeTurnId: "turn_compact",
+    payload: { text: "压缩后继续", attachments: [] },
+    runtime: {}
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.appThreadId, "thr_existing");
+  assert.equal(result.activeTurnId, "turn_after_compact");
+  assert.equal(result.sessionStatus, "running");
+
+  const staleEvent = events.find((event) => event.type === "turn.stale");
+  assert.ok(staleEvent);
+  assert.equal(staleEvent.clearActiveTurnId, true);
+  assert.equal(staleEvent.activeTurnId, "turn_compact");
+  assert.match(staleEvent.raw.error, /compact turn/i);
+
+  const requests = JSON.parse(fs.readFileSync(${JSON.stringify(recordPath)}, "utf8"));
+  assert.deepEqual(requests.map((request) => request.method), ["thread/resume", "turn/steer", "turn/start"]);
+  assert.equal(requests[1].params.expectedTurnId, "turn_compact");
+  assert.equal(requests[2].params.input[0].text, "压缩后继续");
 } finally {
   runtime.stop();
 }
@@ -747,6 +1420,7 @@ rl.on("line", (line) => {
 import assert from "node:assert/strict";
 
 process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
 process.env.ECHO_MODE = "relay";
 process.env.ECHO_TOKEN = "test-token";
 process.env.ECHO_RELAY_URL = "https://example.test";
@@ -849,6 +1523,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
 process.env.ECHO_MODE = "relay";
 process.env.ECHO_TOKEN = "test-token";
 process.env.ECHO_RELAY_URL = "https://example.test";
@@ -959,6 +1634,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
 process.env.ECHO_MODE = "relay";
 process.env.ECHO_TOKEN = "test-token";
 process.env.ECHO_RELAY_URL = "https://example.test";
@@ -985,7 +1661,7 @@ try {
         { role: "assistant", text: "Claude Code 已定位到会话恢复问题。" }
       ]
     },
-    runtime: {}
+    runtime: { model: "gpt-5.6-sol", reasoningEffort: "max" }
   });
 
   assert.equal(result.ok, true);
@@ -994,10 +1670,14 @@ try {
 
   const requests = JSON.parse(fs.readFileSync(${JSON.stringify(recordPath)}, "utf8"));
   assert.deepEqual(requests.map((request) => request.method), ["thread/start", "turn/start"]);
+  assert.equal(requests[0].params.model, "gpt-5.6-sol");
+  assert.equal(requests[1].params.model, "gpt-5.6-sol");
+  assert.equal(requests[1].params.effort, "max");
   assert.match(requests[1].params.input[0].text, /恢复的 Codex 会话/);
   assert.match(requests[1].params.input[0].text, /先用 Claude Code 分析问题/);
   assert.match(requests[1].params.input[0].text, /Claude Code 已定位到会话恢复问题/);
   assert.match(requests[1].params.input[0].text, /切到 Codex 继续修复/);
+  assert.equal(Object.prototype.hasOwnProperty.call(requests[1].params, "collaborationMode"), false);
 } finally {
   runtime.stop();
 }
@@ -1059,6 +1739,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
 process.env.ECHO_MODE = "relay";
 process.env.ECHO_TOKEN = "test-token";
 process.env.ECHO_RELAY_URL = "https://example.test";
@@ -1082,6 +1763,170 @@ try {
   assert.equal(fs.readFileSync(${JSON.stringify(attemptsPath)}, "utf8"), "2");
 } finally {
   runtime.stop();
+}
+`;
+
+  const result = spawnSync(process.execPath, ["--input-type=module", "-"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    input: script
+  });
+
+  assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join("\n"));
+});
+
+test("CodexInteractiveRuntime downloads relay attachments with the agent token", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-runtime-agent-attachment-token-"));
+  const homePath = path.join(tempRoot, "home");
+  const workspacePath = path.join(tempRoot, "workspace");
+  const fakeCodexPath = path.join(tempRoot, "fake-codex-app");
+  const recordPath = path.join(tempRoot, "turn-start.json");
+
+  fs.mkdirSync(homePath, { recursive: true });
+  fs.mkdirSync(workspacePath, { recursive: true });
+  fs.writeFileSync(path.join(workspacePath, "README.md"), "# attachment workspace\n", "utf8");
+  execFileSync("git", ["init", "-q"], { cwd: workspacePath });
+  execFileSync("git", ["add", "README.md"], { cwd: workspacePath });
+  execFileSync("git", ["-c", "user.name=Echo Test", "-c", "user.email=echo@example.test", "commit", "-qm", "initial"], { cwd: workspacePath });
+  fs.writeFileSync(
+    fakeCodexPath,
+    `#!/usr/bin/env node
+import fs from "node:fs";
+import readline from "node:readline";
+
+const rl = readline.createInterface({ input: process.stdin });
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    send({ id: message.id, result: { userAgent: "fake", codexHome: "/tmp/codex", platformFamily: "unix", platformOs: "macos" } });
+    return;
+  }
+  if (message.method === "initialized") return;
+  if (message.method === "thread/start") {
+    send({ id: message.id, result: { thread: { id: "thr_agent_attachment_token", preview: "", ephemeral: false, modelProvider: "openai", createdAt: 1, cwd: message.params.cwd } } });
+    return;
+  }
+  if (message.method === "turn/start") {
+    fs.writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify(message.params, null, 2), "utf8");
+    const turn = { id: "turn_agent_attachment_token", items: [], status: "inProgress", error: null, startedAt: 1, completedAt: null, durationMs: null };
+    send({ id: message.id, result: { turn } });
+    setTimeout(() => send({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { ...turn, status: "completed", completedAt: 2 } } }), 50);
+  }
+});
+`,
+    "utf8"
+  );
+  fs.chmodSync(fakeCodexPath, 0o755);
+
+  const script = `
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import http from "node:http";
+import path from "node:path";
+
+const attachmentBody = Buffer.from("alpha\\nbeta\\n", "utf8");
+let seenHeaders = null;
+const relayServer = http.createServer((req, res) => {
+  seenHeaders = req.headers;
+  if (req.url !== "/api/agent/codex/attachments/att-file") {
+    if (req.url === "/api/agent/codex/attachments/att-fail") {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "download failed" }));
+      return;
+    }
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "not found" }));
+    return;
+  }
+  if (req.headers["x-echo-agent-token"] !== "profile-agent-token") {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Attachment not found." }));
+    return;
+  }
+  res.writeHead(200, {
+    "Cache-Control": "no-store, max-age=0",
+    "Content-Type": "text/plain",
+    "Content-Length": String(attachmentBody.length)
+  });
+  res.end(attachmentBody);
+});
+await new Promise((resolve) => relayServer.listen(0, "127.0.0.1", resolve));
+
+process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
+process.env.ECHO_MODE = "relay";
+process.env.ECHO_TOKEN = "legacy-owner-token";
+process.env.ECHO_AGENT_TOKEN = "profile-agent-token";
+process.env.ECHO_RELAY_URL = "http://127.0.0.1:" + relayServer.address().port;
+process.env.ECHO_CODEX_COMMAND = ${JSON.stringify(fakeCodexPath)};
+process.env.ECHO_CODEX_APP_PATH = ${JSON.stringify(fakeCodexPath)};
+process.env.ECHO_CODEX_WORKSPACES = ${JSON.stringify(`demo=${workspacePath}`)};
+
+const { CodexInteractiveRuntime } = await import(${JSON.stringify(path.join(process.cwd(), "src/lib/codexInteractiveRunner.js"))});
+
+const runtime = new CodexInteractiveRuntime();
+try {
+  const result = await runtime.handleCommand({
+    sessionId: "session-agent-attachment-token",
+    type: "start",
+    projectId: "demo",
+    payload: {
+      prompt: "read this",
+      attachments: [{
+        type: "file",
+        id: "att-file",
+        name: "test.txt",
+        mimeType: "text/plain",
+        sizeBytes: attachmentBody.length,
+        downloadPath: "/api/agent/codex/attachments/att-file"
+      }]
+    },
+    runtime: {}
+  });
+  assert.equal(result.ok, true);
+  assert.equal(seenHeaders["x-echo-agent-token"], "profile-agent-token");
+  assert.equal(seenHeaders["x-echo-token"], "legacy-owner-token");
+  const params = JSON.parse(fs.readFileSync(${JSON.stringify(recordPath)}, "utf8"));
+  const text = params.input[0].text;
+  assert.match(text, /\\[Echo attachments\\]/);
+  const match = /local file: (.+)/.exec(text);
+  assert.ok(match);
+  const filePath = match[1].trim();
+  const stagingRoot = path.join(${JSON.stringify(homePath)}, ".echo-voice", "codex-attachment-staging", "default-agent");
+  assert.equal(filePath.startsWith(stagingRoot), true);
+  assert.equal(filePath.startsWith(${JSON.stringify(workspacePath)}), false);
+  assert.equal(fs.readFileSync(filePath, "utf8"), "alpha\\nbeta\\n");
+  assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: ${JSON.stringify(workspacePath)}, encoding: "utf8" }), "");
+  const worktreePath = path.join(${JSON.stringify(tempRoot)}, "attachment-worktree");
+  execFileSync("git", ["worktree", "add", "--detach", worktreePath, "HEAD"], { cwd: ${JSON.stringify(workspacePath)} });
+  assert.equal(fs.existsSync(path.join(worktreePath, "README.md")), true);
+  const deadline = Date.now() + 2000;
+  while (fs.existsSync(filePath) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(fs.existsSync(filePath), false);
+
+  await assert.rejects(
+    runtime.handleCommand({
+      id: "command-failed-attachment",
+      sessionId: "session-agent-attachment-token",
+      appThreadId: "thr_agent_attachment_token",
+      type: "message",
+      projectId: "demo",
+      payload: {
+        text: "read the failing attachment",
+        attachments: [{ type: "file", id: "att-fail", name: "fail.txt", downloadPath: "/api/agent/codex/attachments/att-fail" }]
+      },
+      runtime: {}
+    }),
+    /HTTP 500/
+  );
+  const stagedEntries = fs.existsSync(stagingRoot) ? fs.readdirSync(stagingRoot, { recursive: true }) : [];
+  assert.equal(stagedEntries.length, 0);
+} finally {
+  await runtime.stop();
+  await new Promise((resolve) => relayServer.close(resolve));
 }
 `;
 
@@ -1127,6 +1972,10 @@ rl.on("line", (line) => {
     fs.writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify(message.params, null, 2), "utf8");
     const turn = { id: "turn_image_ref", items: [], status: "inProgress", error: null, startedAt: 1, completedAt: null, durationMs: null };
     send({ id: message.id, result: { turn } });
+    return;
+  }
+  if (message.method === "turn/interrupt") {
+    send({ id: message.id, result: {} });
   }
 });
 `,
@@ -1141,6 +1990,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 process.env.HOME = ${JSON.stringify(homePath)};
+process.env.CODEX_HOME = ${JSON.stringify(path.join(homePath, ".codex"))};
 process.env.ECHO_MODE = "relay";
 process.env.ECHO_TOKEN = "test-token";
 process.env.ECHO_RELAY_URL = "https://example.test";
@@ -1174,10 +2024,21 @@ try {
   assert.ok(match);
   const imagePath = match[1].trim();
   assert.equal(fs.existsSync(imagePath), true);
-  assert.equal(imagePath.startsWith(path.join(${JSON.stringify(workspacePath)}, ".echo-codex-attachments")), true);
-  assert.equal(imagePath.startsWith(path.join(${JSON.stringify(homePath)}, ".echo-voice", "codex-attachments")), false);
+  assert.equal(imagePath.startsWith(path.join(${JSON.stringify(homePath)}, ".echo-voice", "codex-attachment-staging", "default-agent")), true);
+  assert.equal(imagePath.startsWith(${JSON.stringify(workspacePath)}), false);
+  await runtime.handleCommand({
+    id: "command-cancel-image",
+    sessionId: "session-image-ref",
+    appThreadId: "thr_image_ref",
+    activeTurnId: "turn_image_ref",
+    type: "stop",
+    projectId: "demo",
+    payload: {},
+    runtime: {}
+  });
+  assert.equal(fs.existsSync(imagePath), false);
 } finally {
-  runtime.stop();
+  await runtime.stop();
 }
 `;
 
@@ -1187,5 +2048,54 @@ try {
     input: script
   });
 
+  assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join("\n"));
+});
+
+test("managed attachment cleanup removes stale staging but rejects paths outside the real root", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-runtime-attachment-cleanup-"));
+  const managedRoot = path.join(tempRoot, "managed");
+  const outsideRoot = path.join(tempRoot, "outside");
+  const managedFile = path.join(managedRoot, "session", "command", "attachment.txt");
+  const outsideFile = path.join(outsideRoot, "keep.txt");
+  fs.mkdirSync(path.dirname(managedFile), { recursive: true });
+  fs.mkdirSync(outsideRoot, { recursive: true });
+  fs.writeFileSync(managedFile, "stale", "utf8");
+  fs.writeFileSync(outsideFile, "keep", "utf8");
+
+  const { removeManagedAttachmentStagingPath } = await import("../src/lib/codexInteractiveRunner.js");
+  assert.equal(await removeManagedAttachmentStagingPath(managedRoot, path.join(managedRoot, "session")), true);
+  assert.equal(fs.existsSync(managedFile), false);
+
+  await assert.rejects(removeManagedAttachmentStagingPath(managedRoot, outsideRoot), /outside the managed staging root/);
+  assert.equal(fs.readFileSync(outsideFile, "utf8"), "keep");
+
+  const symlinkPath = path.join(managedRoot, "outside-link");
+  fs.symlinkSync(outsideRoot, symlinkPath, "dir");
+  await assert.rejects(removeManagedAttachmentStagingPath(managedRoot, symlinkPath), /realpath outside the managed staging root/);
+  assert.equal(fs.readFileSync(outsideFile, "utf8"), "keep");
+});
+
+test("CodexInteractiveRuntime removes stale attachment staging during startup", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-runtime-attachment-recovery-"));
+  const homePath = path.join(tempRoot, "home");
+  const staleFile = path.join(homePath, ".echo-voice", "codex-attachment-staging", "recovery-agent", "stale-session", "stale-command", "stale.txt");
+  fs.mkdirSync(path.dirname(staleFile), { recursive: true });
+  fs.writeFileSync(staleFile, "stale", "utf8");
+
+  const script = `
+import assert from "node:assert/strict";
+import fs from "node:fs";
+
+process.env.HOME = ${JSON.stringify(homePath)};
+const { CodexInteractiveRuntime } = await import(${JSON.stringify(path.join(process.cwd(), "src/lib/codexInteractiveRunner.js"))});
+const runtime = new CodexInteractiveRuntime({ agentId: "recovery-agent" });
+await runtime.stop();
+assert.equal(fs.existsSync(${JSON.stringify(staleFile)}), false);
+`;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    input: script
+  });
   assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join("\n"));
 });

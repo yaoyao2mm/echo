@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const defaultMacosBundledCodexPath = "/Applications/Codex.app/Contents/Resources/codex";
+const defaultMacosBundledCodexPath = "/Applications/ChatGPT.app/Contents/Resources/codex";
+const legacyMacosBundledCodexPath = "/Applications/Codex.app/Contents/Resources/codex";
 
 export function bundledCodexCommandPath(platform = process.platform, existsSync = fs.existsSync, options = {}) {
   if (platform !== "darwin") return "";
@@ -31,7 +32,7 @@ export function resolveDesktopCodexCommand(options = {}) {
         command: "",
         source: "missing-codex-app",
         detail:
-          "Codex.app is required on macOS. Install the official Codex app, or set ECHO_CODEX_APP_PATH to its bundled codex binary."
+          "ChatGPT.app (or Codex.app) is required on macOS. Install the ChatGPT app, or set ECHO_CODEX_APP_PATH to its bundled codex binary."
       };
     }
 
@@ -41,8 +42,8 @@ export function resolveDesktopCodexCommand(options = {}) {
       command: bundledCommand,
       source: "codex-app",
       detail: ignoresLegacyCommand
-        ? `Using Codex.app at ${bundledCommand}. Ignoring legacy ECHO_CODEX_COMMAND=${configuredCommand}.`
-        : `Using Codex.app at ${bundledCommand}.`
+        ? `Using Codex (ChatGPT.app) at ${bundledCommand}. Ignoring legacy ECHO_CODEX_COMMAND=${configuredCommand}.`
+        : `Using Codex (ChatGPT.app) at ${bundledCommand}.`
     };
   }
 
@@ -57,10 +58,13 @@ export function resolveDesktopCodexCommand(options = {}) {
 
 function bundledCodexCommandCandidates(options = {}) {
   const explicitPath = String(options.bundledPath || process.env.ECHO_CODEX_APP_PATH || "").trim();
+  const home = os.homedir();
   const candidates = [
     explicitPath,
     defaultMacosBundledCodexPath,
-    path.join(os.homedir(), "Applications", "Codex.app", "Contents", "Resources", "codex")
+    path.join(home, "Applications", "ChatGPT.app", "Contents", "Resources", "codex"),
+    legacyMacosBundledCodexPath,
+    path.join(home, "Applications", "Codex.app", "Contents", "Resources", "codex")
   ].filter(Boolean);
   return Array.from(new Set(candidates));
 }

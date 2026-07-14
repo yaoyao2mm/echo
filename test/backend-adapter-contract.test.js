@@ -99,6 +99,7 @@ test("backend adapter snapshots expose the v1 compatibility contract for Codex a
 
   const codexRuntime = codex.snapshot();
   assert.equal(codexRuntime.contractVersion, backendAdapterContractVersion);
+  assert.deepEqual(codexRuntime.supportedPermissionModes, ["strict", "approve", "full"]);
   assert.equal(codexRuntime.capabilities.supports.attachments, true);
   assert.equal(codexRuntime.capabilities.supports.compaction, true);
   assert.equal(codexRuntime.capabilities.supports.approvalRequests, true);
@@ -111,6 +112,7 @@ test("backend adapter snapshots expose the v1 compatibility contract for Codex a
   const claudeRuntime = claude.snapshot();
   assert.equal(claudeRuntime.contractVersion, backendAdapterContractVersion);
   assert.equal(claudeRuntime.provider, "deepseek-via-claude");
+  assert.deepEqual(claudeRuntime.supportedPermissionModes, ["strict", "approve", "full"]);
   assert.equal(claudeRuntime.capabilities.supports.attachments, false);
   assert.equal(claudeRuntime.capabilities.supports.contextUsage, true);
   assert.equal(claudeRuntime.capabilities.supports.compaction, false);
@@ -145,9 +147,14 @@ test("desktop registry publishes contract-validated backend roster and runtime o
     ]
   ]);
 
-  const snapshot = desktopRuntimeSnapshot(backends);
+  const snapshot = desktopRuntimeSnapshot(backends, { sessionConcurrency: 6 });
   assert.equal(snapshot.backendId, "codex");
   assert.equal(snapshot.defaultBackendId, "codex");
+  assert.equal(snapshot.plugins.capability.canManage, true);
+  assert.equal(snapshot.plugins.plugins[0].id, "open-spec");
+  assert.equal(snapshot.plugins.plugins[0].enabled, true);
+  assert.equal(snapshot.capabilities.orchestration.maxConcurrency, 6);
+  assert.equal(snapshot.backends.every((backend) => backend.capabilities.orchestration.maxConcurrency === 6), true);
   assert.deepEqual(snapshot.backends.map((backend) => backend.backendId), ["claude-code", "codex"]);
   for (const backend of snapshot.backends) {
     assert.equal(validateBackendSnapshot(backend).ok, true);
@@ -227,6 +234,7 @@ test("Claude backend adapter can publish a separate configured backend profile",
   assert.equal(snapshot.backendName, "DeepSeek Code");
   assert.equal(snapshot.supportedModels[0].id, "deepseek-v4-flash");
   assert.deepEqual(snapshot.allowedPermissionModes, ["strict", "approve"]);
+  assert.deepEqual(snapshot.supportedPermissionModes, ["strict", "approve", "full"]);
   assert.equal(snapshot.worktreeMode, "always");
 
   const refreshed = await adapter.refreshCapabilities();
@@ -366,13 +374,13 @@ test("Volcengine Coding Plan configures the built-in Claude Code backend from en
   assert.equal(result.claude.baseUrl, "https://ark.cn-beijing.volces.com/api/coding");
   assert.equal(result.claude.model, "ark-code-latest");
   assert.deepEqual(result.claude.supportedModels, volcengineCodingPlanModelIds());
-  assert.equal(result.claude.permissionMode, "approve");
+  assert.equal(result.claude.permissionMode, "full");
   assert.equal(result.claude.allowedPermissionModes, "strict,approve,full");
   assert.deepEqual(result.agentBackends, []);
   assert.deepEqual(result.roster.map((backend) => backend.backendId), ["claude-code"]);
   assert.equal(result.roster[0].backendName, "Claude Code");
   assert.deepEqual(result.roster[0].supportedModels, volcengineCodingPlanModelIds());
-  assert.equal(result.roster[0].permissionMode, "approve");
+  assert.equal(result.roster[0].permissionMode, "full");
   assert.deepEqual(result.roster[0].allowedPermissionModes, ["strict", "approve", "full"]);
 });
 
@@ -533,7 +541,7 @@ test("explicit Claude DeepSeek settings are preserved when Volcengine Coding Pla
   assert.equal(result.agentBackends[0].baseUrl, "https://ark.cn-beijing.volces.com/api/coding");
   assert.equal(result.agentBackends[0].model, "ark-code-latest");
   assert.deepEqual(result.agentBackends[0].supportedModels, volcengineCodingPlanModelIds());
-  assert.equal(result.agentBackends[0].permissionMode, "approve");
+  assert.equal(result.agentBackends[0].permissionMode, "full");
   assert.equal(result.agentBackends[0].allowedPermissionModes, "strict,approve,full");
   assert.deepEqual(result.roster.map((backend) => backend.backendId), ["claude-code", "volcengine-coding-plan"]);
   assert.equal(result.roster[0].provider, "deepseek-via-claude");
@@ -542,13 +550,13 @@ test("explicit Claude DeepSeek settings are preserved when Volcengine Coding Pla
   assert.equal(result.roster[1].provider, "volcengine-coding-plan");
   assert.equal(result.roster[1].backendName, "Claude Code");
   assert.equal(result.roster[1].baseUrl, "https://ark.cn-beijing.volces.com/api/coding");
-  assert.equal(result.roster[1].permissionMode, "approve");
+  assert.equal(result.roster[1].permissionMode, "full");
   assert.deepEqual(result.roster[1].allowedPermissionModes, ["strict", "approve", "full"]);
   assert.equal(result.roster[1].model, "ark-code-latest");
   assert.deepEqual(result.roster[1].supportedModels, volcengineCodingPlanModelIds());
 });
 
-test("custom Volcengine Coding Plan backend defaults to editable Claude permissions", () => {
+test("custom Volcengine Coding Plan backend defaults to full Claude permissions", () => {
   const script = `
     process.env.ECHO_CODEX_ENABLED = "false";
     process.env.ECHO_CLAUDE_ENABLED = "false";
@@ -593,14 +601,14 @@ test("custom Volcengine Coding Plan backend defaults to editable Claude permissi
   assert.deepEqual(result.agentBackends, [
     {
       backendId: "volcengine-coding-plan",
-      permissionMode: "approve",
+      permissionMode: "full",
       allowedPermissionModes: "strict,approve,full"
     }
   ]);
   assert.deepEqual(result.roster, [
     {
       backendId: "volcengine-coding-plan",
-      permissionMode: "approve",
+      permissionMode: "full",
       allowedPermissionModes: ["strict", "approve", "full"]
     }
   ]);

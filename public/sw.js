@@ -1,15 +1,15 @@
-self.ECHO_CACHE = "echo-codex-v132";
+self.ECHO_CACHE = "echo-codex-v143";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(self.ECHO_CACHE).then((cache) =>
       cache.addAll([
         "/",
-        "/styles.css?v=132",
-        "/app.js?v=132",
-        "/manifest.webmanifest?v=132",
-        "/vendor/markdown-it-14.1.0.min.js?v=132",
-        "/vendor/dompurify-3.2.6.min.js?v=132"
+        "/styles.css?v=141",
+        "/app.js?v=142",
+        "/manifest.webmanifest?v=135",
+        "/vendor/markdown-it-14.1.0.min.js?v=135",
+        "/vendor/dompurify-3.2.6.min.js?v=135"
       ])
     )
   );

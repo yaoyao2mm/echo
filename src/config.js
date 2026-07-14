@@ -39,8 +39,12 @@ const volcengineCodingModel =
   process.env.VOLCENGINE_CODING_CHAT_MODEL ||
   "ark-code-latest";
 const authUsers = parseAuthUsers();
+const pairingTokens = parsePairingTokens(authUsers);
+const agentTokens = parseAgentTokens(authUsers);
+const agentProfiles = parseAgentProfiles(process.env.ECHO_AGENT_PROFILES_JSON || "");
 const codexWorktreeMode = normalizeWorktreeMode(process.env.ECHO_CODEX_WORKTREE_MODE || "off");
-const defaultVolcengineCodingPermissionMode = "approve";
+const codexWorktreeRuntime = parseWorktreeRuntimeConfig(process.env.ECHO_CODEX_WORKTREE_RUNTIME_JSON || "");
+const defaultVolcengineCodingPermissionMode = "full";
 const defaultVolcengineCodingAllowedPermissionModes = "strict,approve,full";
 const volcengineCodingClaudeEnabled = parseBoolean(process.env.ECHO_VOLCENGINE_CODING_ENABLED, false);
 const explicitClaudeConfigured = hasExplicitClaudeConfig();
@@ -69,8 +73,22 @@ export const config = {
   auth: {
     enabled: parseBoolean(process.env.ECHO_AUTH_ENABLED, authUsers.length > 0),
     users: authUsers,
+    pairingTokens,
+    agentTokens,
     sessionSecret: process.env.ECHO_SESSION_SECRET || process.env.ECHO_TOKEN || runtimeToken,
-    sessionTtlMs: Number(process.env.ECHO_SESSION_TTL_HOURS || 24 * 30) * 60 * 60 * 1000
+    sessionTtlMs: Number(process.env.ECHO_SESSION_TTL_HOURS || 24 * 30) * 60 * 60 * 1000,
+    sessionNotBeforeMs: parseSessionNotBeforeMs(process.env.ECHO_SESSION_NOT_BEFORE),
+    loginRateLimitWindowMs: Number(process.env.ECHO_LOGIN_RATE_LIMIT_WINDOW_SECONDS || 60) * 1000,
+    loginRateLimitMax: Number(process.env.ECHO_LOGIN_RATE_LIMIT_MAX || 8),
+    defaultStorageQuotaBytes: parseStorageQuotaBytes()
+  },
+
+  agent: {
+    id: process.env.ECHO_AGENT_ID || "",
+    token: process.env.ECHO_AGENT_TOKEN || process.env.ECHO_TOKEN || runtimeToken,
+    ownerUsername: process.env.ECHO_AGENT_OWNER_USERNAME || "",
+    displayName: process.env.ECHO_AGENT_DISPLAY_NAME || "",
+    profiles: agentProfiles
   },
 
   network: {
@@ -102,9 +120,10 @@ export const config = {
     enabled: process.env.ECHO_CODEX_ENABLED !== "false",
     appPath: process.env.ECHO_CODEX_APP_PATH || "",
     command: process.env.ECHO_CODEX_COMMAND || "codex",
+    configPath: path.resolve(expandHome(process.env.ECHO_CODEX_CONFIG_PATH || path.join(os.homedir(), ".codex", "config.toml"))),
     workspaces: parseWorkspaces(process.env.ECHO_CODEX_WORKSPACES || process.cwd()),
-    sandbox: process.env.ECHO_CODEX_SANDBOX || "workspace-write",
-    approvalPolicy: process.env.ECHO_CODEX_APPROVAL_POLICY || "on-request",
+    sandbox: process.env.ECHO_CODEX_SANDBOX || "danger-full-access",
+    approvalPolicy: process.env.ECHO_CODEX_APPROVAL_POLICY || "never",
     approvalTimeoutMs: Number(process.env.ECHO_CODEX_APPROVAL_TIMEOUT_MS || 5 * 60 * 1000),
     model: process.env.ECHO_CODEX_MODEL || "",
     reasoningEffort: process.env.ECHO_CODEX_REASONING_EFFORT || process.env.ECHO_CODEX_MODEL_REASONING_EFFORT || "",
@@ -113,9 +132,21 @@ export const config = {
     leaseMs: Number(process.env.ECHO_CODEX_LEASE_MS || 10 * 60 * 1000),
     sessionConcurrency: parseIntegerInRange(process.env.ECHO_CODEX_SESSION_CONCURRENCY, 3, 1, 8),
     maxEvents: Number(process.env.ECHO_CODEX_MAX_EVENTS || 500),
+    retryTransientErrors: parseBoolean(process.env.ECHO_CODEX_RETRY_TRANSIENT_ERRORS, true),
+    retryDelayMs: Number(process.env.ECHO_CODEX_RETRY_DELAY_MS || 60 * 1000),
+    retryMaxAttempts: parseIntegerInRange(process.env.ECHO_CODEX_RETRY_MAX_ATTEMPTS, 2, 0, 10),
+    retryDowngradeReasoning: parseBoolean(process.env.ECHO_CODEX_RETRY_DOWNGRADE_REASONING, true),
     worktreeMode: codexWorktreeMode,
     worktreeRoot: path.resolve(expandHome(process.env.ECHO_CODEX_WORKTREE_ROOT || path.join(os.homedir(), ".echo-voice", "worktrees"))),
-    worktreeRetentionDays: Number(process.env.ECHO_CODEX_WORKTREE_RETENTION_DAYS || 14)
+    worktreeRetentionDays: Number(process.env.ECHO_CODEX_WORKTREE_RETENTION_DAYS || 14),
+    worktreeRuntime: codexWorktreeRuntime
+  },
+
+  mcp: {
+    enabled: parseBoolean(process.env.ECHO_MCP_ENABLED, false),
+    defaultProfile: process.env.ECHO_MCP_DEFAULT_PROFILE || "off",
+    defaultTargets: parseFlexibleStringList(process.env.ECHO_MCP_DEFAULT_TARGETS || "codex"),
+    claudeScope: process.env.ECHO_MCP_CLAUDE_SCOPE || "user"
   },
 
   claude: {
@@ -138,7 +169,7 @@ export const config = {
       (useVolcengineCodingClaudeConfig ? resolveVolcengineCodingPermissionMode() : "") ||
       process.env.ECHO_CLAUDE_PERMISSION_MODE ||
       process.env.ECHO_CLAUDE_PROFILE ||
-      "",
+      "full",
     reasoningEffort:
       (useVolcengineCodingClaudeConfig ? process.env.ECHO_VOLCENGINE_CODING_REASONING_EFFORT : "") ||
       process.env.ECHO_CLAUDE_REASONING_EFFORT ||
@@ -157,7 +188,7 @@ export const config = {
     allowedPermissionModes:
       (useVolcengineCodingClaudeConfig ? resolveVolcengineCodingAllowedPermissionModes() : "") ||
       process.env.ECHO_CLAUDE_ALLOWED_PERMISSION_MODES ||
-      "strict",
+      "strict,approve,full",
     worktreeMode: normalizeWorktreeMode(
       (useVolcengineCodingClaudeConfig ? process.env.ECHO_VOLCENGINE_CODING_WORKTREE_MODE : "") ||
         process.env.ECHO_CLAUDE_WORKTREE_MODE ||
@@ -226,6 +257,16 @@ function normalizeWorktreeMode(value) {
   return ["off", "optional", "always"].includes(mode) ? mode : "off";
 }
 
+function normalizeMcpTransport(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[-\s]+/g, "_");
+  if (normalized === "stdio") return "stdio";
+  if (normalized === "http" || normalized === "streamable_http" || normalized === "streamablehttp") return "streamable_http";
+  return "streamable_http";
+}
+
 function validateConfig() {
   validateChoice("ECHO_CODEX_WORKTREE_MODE", process.env.ECHO_CODEX_WORKTREE_MODE, ["off", "optional", "always"]);
   validateChoice("ECHO_CODEX_SANDBOX", process.env.ECHO_CODEX_SANDBOX, ["read-only", "workspace-write", "danger-full-access"]);
@@ -233,6 +274,8 @@ function validateConfig() {
   validatePositiveNumber("ECHO_CODEX_WORKTREE_RETENTION_DAYS", process.env.ECHO_CODEX_WORKTREE_RETENTION_DAYS);
   validatePositiveNumber("ECHO_CODEX_LEASE_MS", process.env.ECHO_CODEX_LEASE_MS);
   validatePositiveNumber("ECHO_CODEX_TIMEOUT_MS", process.env.ECHO_CODEX_TIMEOUT_MS);
+  validateNonNegativeNumber("ECHO_CODEX_RETRY_MAX_ATTEMPTS", process.env.ECHO_CODEX_RETRY_MAX_ATTEMPTS);
+  validatePositiveNumber("ECHO_CODEX_RETRY_DELAY_MS", process.env.ECHO_CODEX_RETRY_DELAY_MS);
 }
 
 function validateChoice(name, value, choices) {
@@ -247,6 +290,14 @@ function validatePositiveNumber(name, value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) {
     throw new Error(`${name} must be a positive number.`);
+  }
+}
+
+function validateNonNegativeNumber(name, value) {
+  if (value === undefined || value === "") return;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) {
+    throw new Error(`${name} must be a non-negative number.`);
   }
 }
 
@@ -446,8 +497,8 @@ function normalizeAgentBackend(entry = {}) {
   const supportedModels = parseFlexibleStringList(entry.supportedModels ?? entry.models);
   const provider = String(entry.provider || claudeProviderForBaseUrl(baseUrl)).trim();
   const isVolcengineCodingPlanBackend = provider === volcengineCodingPlanProvider || isVolcengineCodingPlanBaseUrl(baseUrl);
-  const defaultPermissionMode = isVolcengineCodingPlanBackend ? defaultVolcengineCodingPermissionMode : "";
-  const defaultAllowedPermissionModes = isVolcengineCodingPlanBackend ? defaultVolcengineCodingAllowedPermissionModes : "strict";
+  const defaultPermissionMode = "full";
+  const defaultAllowedPermissionModes = defaultVolcengineCodingAllowedPermissionModes;
 
   return {
     type: "claude-code",
@@ -491,6 +542,120 @@ function parseFlexibleStringList(value) {
   return parseModelList(value);
 }
 
+export function parseAgentProfiles(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return [];
+
+  let entries = [];
+  try {
+    const parsed = JSON.parse(raw);
+    entries = Array.isArray(parsed) ? parsed : [parsed];
+  } catch (error) {
+    console.warn("Could not parse ECHO_AGENT_PROFILES_JSON:", error.message);
+    return [];
+  }
+
+  const profiles = [];
+  const seenAgentIds = new Set();
+  for (const entry of entries) {
+    const profile = normalizeAgentProfile(entry);
+    if (!profile) continue;
+    if (seenAgentIds.has(profile.agentId)) {
+      console.warn(`Skipping duplicate Echo agent profile id: ${profile.agentId}`);
+      continue;
+    }
+    seenAgentIds.add(profile.agentId);
+    profiles.push(profile);
+  }
+  return profiles;
+}
+
+function normalizeAgentProfile(entry = {}) {
+  if (!entry || typeof entry !== "object") return null;
+  const username = String(entry.username || entry.ownerUsername || entry.owner_user || entry.owner || "").trim();
+  const agentId = String(entry.agentId || entry.agent_id || entry.id || "").trim();
+  const tokenEnv = String(entry.tokenEnv || entry.token_env || entry.agentTokenEnv || entry.agent_token_env || "").trim();
+  const token = String(entry.token || entry.agentToken || entry.agent_token || (tokenEnv ? process.env[tokenEnv] : "") || "").trim();
+  const workspacesText = agentProfileWorkspacesText(entry.workspaces ?? entry.workspace ?? entry.ECHO_CODEX_WORKSPACES);
+  if (!username) {
+    console.warn("Skipping Echo agent profile without a username.");
+    return null;
+  }
+  if (!agentId) {
+    console.warn(`Skipping Echo agent profile for ${username} without an agentId.`);
+    return null;
+  }
+  if (!token) {
+    console.warn(`Skipping Echo agent profile ${agentId} without an agent token.`);
+    return null;
+  }
+  if (!workspacesText) {
+    console.warn(`Skipping Echo agent profile ${agentId} without workspaces.`);
+    return null;
+  }
+
+  return {
+    username,
+    agentId,
+    token,
+    displayName: String(entry.displayName || entry.display_name || entry.label || agentId).trim(),
+    workspacesText,
+    workspaces: parseWorkspaces(workspacesText),
+    env: normalizeProfileEnv(entry.env)
+  };
+}
+
+function agentProfileWorkspacesText(value) {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    return value.map(agentProfileWorkspaceEntryText).filter(Boolean).join(",");
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value)
+      .map(([label, workspace]) => {
+        if (workspace && typeof workspace === "object") {
+          return agentProfileWorkspaceEntryText({ ...workspace, label: workspace.label || workspace.id || label });
+        }
+        return agentProfileWorkspaceEntryText({ label, path: workspace });
+      })
+      .filter(Boolean)
+      .join(",");
+  }
+  return "";
+}
+
+function agentProfileWorkspaceEntryText(value) {
+  if (typeof value === "string") return value.trim();
+  if (!value || typeof value !== "object") return "";
+  const label = String(value.label || value.id || value.name || "").trim();
+  const rawPath = typeof value.path === "string" ? value.path : typeof value.value === "string" ? value.value : "";
+  const workspacePath = rawPath.trim();
+  if (!workspacePath) return "";
+  return label ? `${label}=${workspacePath}` : workspacePath;
+}
+
+function normalizeProfileEnv(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const env = {};
+  for (const [key, rawValue] of Object.entries(value)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (rawValue === undefined || rawValue === null) continue;
+    env[key] = String(rawValue);
+  }
+  return env;
+}
+
+function parseJsonArray(value, fallback = []) {
+  const raw = String(value || "").trim();
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map((item) => String(item || "").trim()).filter(Boolean) : fallback;
+  } catch {
+    return parseFlexibleStringList(raw);
+  }
+}
+
 function configNumberFallback(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : fallback;
@@ -523,6 +688,164 @@ function parseAuthUsers() {
   return users;
 }
 
+function parseAgentTokens(users = []) {
+  const tokens = [];
+  const seenAgentIds = new Set();
+  const fallbackOwner =
+    process.env.ECHO_AGENT_OWNER_USERNAME ||
+    (users.length === 1 ? users[0].username : "");
+  if (process.env.ECHO_AGENT_TOKENS_JSON) {
+    try {
+      const parsed = JSON.parse(process.env.ECHO_AGENT_TOKENS_JSON);
+      const entries = Array.isArray(parsed) ? parsed : [parsed];
+      for (const entry of entries) {
+        const token = normalizeAgentToken(entry);
+        if (token && !token.agentId) {
+          console.warn("Skipping Echo agent token without an agentId.");
+          continue;
+        }
+        if (token && seenAgentIds.has(token.agentId)) {
+          console.warn(`Skipping duplicate Echo agent token id: ${token.agentId}`);
+          continue;
+        }
+        if (token) tokens.push(token);
+        if (token?.agentId) seenAgentIds.add(token.agentId);
+      }
+    } catch (error) {
+      console.warn("Could not parse ECHO_AGENT_TOKENS_JSON:", error.message);
+    }
+  }
+
+  const envAgentToken = normalizeAgentToken({
+    token: process.env.ECHO_AGENT_TOKEN,
+    tokenSha256: process.env.ECHO_AGENT_TOKEN_SHA256,
+    ownerUsername: fallbackOwner,
+    agentId: process.env.ECHO_AGENT_ID,
+    displayName: process.env.ECHO_AGENT_DISPLAY_NAME
+  });
+  if (envAgentToken && !tokens.some((item) => sameTokenConfig(item, envAgentToken))) {
+    if (envAgentToken.agentId && seenAgentIds.has(envAgentToken.agentId)) {
+      console.warn(`Skipping duplicate Echo agent token id: ${envAgentToken.agentId}`);
+    } else {
+      tokens.push(envAgentToken);
+      if (envAgentToken.agentId) seenAgentIds.add(envAgentToken.agentId);
+    }
+  }
+
+  if (tokens.length === 0) {
+    const fallbackToken = process.env.ECHO_TOKEN || runtimeToken;
+    const fallbackTokenSha256 = process.env.ECHO_TOKEN_SHA256 || "";
+    const fallback = normalizeAgentToken({
+      token: fallbackToken,
+      tokenSha256: fallbackTokenSha256,
+      ownerUsername: fallbackOwner,
+      agentId: String(process.env.ECHO_AGENT_ID || "").trim(),
+      displayName: String(process.env.ECHO_AGENT_DISPLAY_NAME || "").trim(),
+      legacy: true
+    });
+    if (fallback) tokens.push(fallback);
+  }
+
+  return tokens;
+}
+
+function normalizeAgentToken(entry = {}) {
+  const token = String(entry.token || entry.agentToken || entry.agent_token || "").trim();
+  const tokenSha256 = normalizeHexSha256(entry.tokenSha256 || entry.token_hash || entry.tokenHash || "");
+  if (!token && !tokenSha256) return null;
+  return {
+    token,
+    tokenSha256,
+    ownerUsername: String(entry.ownerUsername || entry.owner_user || entry.owner || "").trim(),
+    agentId: String(entry.agentId || entry.agent_id || "").trim(),
+    displayName: String(entry.displayName || entry.display_name || entry.label || "").trim(),
+    label: String(entry.label || entry.displayName || entry.display_name || "").trim(),
+    legacy: Boolean(entry.legacy)
+  };
+}
+
+function parsePairingTokens(users = []) {
+  const tokens = [];
+  if (process.env.ECHO_PAIRING_TOKENS_JSON) {
+    try {
+      const parsed = JSON.parse(process.env.ECHO_PAIRING_TOKENS_JSON);
+      const entries = Array.isArray(parsed) ? parsed : [parsed];
+      for (const entry of entries) {
+        const token = normalizePairingToken(entry);
+        if (token && !tokens.some((item) => sameTokenConfig(item, token))) tokens.push(token);
+      }
+    } catch (error) {
+      console.warn("Could not parse ECHO_PAIRING_TOKENS_JSON:", error.message);
+    }
+  }
+
+  const envPairingToken = normalizePairingToken({
+    token: process.env.ECHO_TOKEN,
+    tokenSha256: process.env.ECHO_TOKEN_SHA256,
+    ownerUsername: process.env.ECHO_PAIRING_OWNER_USERNAME || (users.length === 1 ? users[0].username : ""),
+    label: process.env.ECHO_PAIRING_TOKEN_LABEL || "Bootstrap pairing token",
+    legacy: true
+  });
+  if (envPairingToken && !tokens.some((item) => sameTokenConfig(item, envPairingToken))) tokens.push(envPairingToken);
+
+  if (tokens.length === 0) {
+    tokens.push({
+      token: runtimeToken,
+      tokenSha256: "",
+      ownerUsername: users.length === 1 ? users[0].username : "",
+      label: "Runtime pairing token",
+      legacy: true
+    });
+  }
+
+  return tokens;
+}
+
+function normalizePairingToken(entry = {}) {
+  const token = String(entry.token || entry.pairingToken || entry.pairing_token || "").trim();
+  const tokenSha256 = normalizeHexSha256(entry.tokenSha256 || entry.token_hash || entry.tokenHash || "");
+  if (!token && !tokenSha256) return null;
+  return {
+    token,
+    tokenSha256,
+    ownerUsername: String(entry.ownerUsername || entry.owner_user || entry.owner || entry.username || "").trim(),
+    label: String(entry.label || entry.displayName || entry.display_name || "Pairing token").trim(),
+    legacy: Boolean(entry.legacy)
+  };
+}
+
+function sameTokenConfig(left = {}, right = {}) {
+  const leftHash = normalizeHexSha256(left.tokenSha256 || left.token_hash || left.tokenHash) || (left.token ? sha256(left.token) : "");
+  const rightHash = normalizeHexSha256(right.tokenSha256 || right.token_hash || right.tokenHash) || (right.token ? sha256(right.token) : "");
+  return Boolean(leftHash && rightHash && leftHash === rightHash);
+}
+
+function normalizeHexSha256(value) {
+  const hash = String(value || "").trim().toLowerCase();
+  return /^[a-f0-9]{64}$/.test(hash) ? hash : "";
+}
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function parseSessionNotBeforeMs(value) {
+  const text = String(value || "").trim();
+  if (!text) return 0;
+  const numeric = Number(text);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric < 100000000000 ? numeric * 1000 : numeric;
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseStorageQuotaBytes() {
+  const explicitBytes = Number(process.env.ECHO_USER_STORAGE_QUOTA_BYTES || "");
+  if (Number.isFinite(explicitBytes) && explicitBytes > 0) return Math.floor(explicitBytes);
+  const mb = Number(process.env.ECHO_USER_STORAGE_QUOTA_MB || "");
+  if (Number.isFinite(mb) && mb > 0) return Math.floor(mb * 1024 * 1024);
+  return 0;
+}
+
 function normalizeAuthUser(entry = {}) {
   const username = String(entry.username || "").trim();
   const password = String(entry.password || "");
@@ -551,6 +874,72 @@ function parseWorkspaces(value) {
         path: workspacePath
       };
     });
+}
+
+export function parseWorktreeRuntimeConfig(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    console.warn("Could not parse ECHO_CODEX_WORKTREE_RUNTIME_JSON:", error.message);
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const result = {};
+  for (const [workspaceId, input] of Object.entries(parsed)) {
+    if (!input || typeof input !== "object" || Array.isArray(input)) continue;
+    const profiles = Array.isArray(input.setupProfiles)
+      ? input.setupProfiles.map(normalizeWorktreeSetupProfile).filter(Boolean)
+      : [];
+    const defaultProfileId = String(input.defaultSetupProfileId || input.setupProfileId || "").trim();
+    const selectedProfileId = profiles.some((profile) => profile.id === defaultProfileId) ? defaultProfileId : profiles[0]?.id || "";
+    const cacheEnv = {};
+    for (const [key, rawValue] of Object.entries(input.cacheEnv || {})) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || rawValue === null || rawValue === undefined) continue;
+      cacheEnv[key] = path.resolve(expandHome(String(rawValue)));
+    }
+    const extraSetupKeyFiles = Array.isArray(input.extraSetupKeyFiles)
+      ? input.extraSetupKeyFiles.map(normalizeRelativeConfigPath).filter(Boolean)
+      : [];
+    const warmInput = input.warmPool && typeof input.warmPool === "object" ? input.warmPool : {};
+    const warmSetupProfileId = String(warmInput.setupProfileId || selectedProfileId || "").trim();
+    result[String(workspaceId).trim()] = {
+      setupProfiles: profiles,
+      defaultSetupProfileId: selectedProfileId,
+      cacheEnv,
+      extraSetupKeyFiles,
+      warmPool: {
+        maxCount: parseIntegerInRange(warmInput.maxCount, 0, 0, 4),
+        ttlHours: parseIntegerInRange(warmInput.ttlHours, 24, 1, 168),
+        setupProfileId: profiles.some((profile) => profile.id === warmSetupProfileId) ? warmSetupProfileId : selectedProfileId
+      }
+    };
+  }
+  return result;
+}
+
+function normalizeWorktreeSetupProfile(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const id = String(input.id || "").trim().replace(/[^A-Za-z0-9_.-]+/g, "-").slice(0, 80);
+  const command = String(input.command || "").trim();
+  if (!id || !command || command.includes("\0")) return null;
+  const args = Array.isArray(input.args) ? input.args.map((arg) => String(arg)).slice(0, 40) : [];
+  return {
+    id,
+    label: String(input.label || id).trim().slice(0, 120) || id,
+    command,
+    args,
+    automatic: input.automatic !== false,
+    timeoutMs: parseIntegerInRange(input.timeoutMs, 10 * 60 * 1000, 1000, 60 * 60 * 1000)
+  };
+}
+
+function normalizeRelativeConfigPath(value) {
+  const normalized = String(value || "").trim().replaceAll("\\", "/").replace(/^\.\//, "");
+  if (!normalized || path.isAbsolute(normalized) || normalized.split("/").some((part) => !part || part === "." || part === "..")) return "";
+  return normalized;
 }
 
 function expandHome(value) {

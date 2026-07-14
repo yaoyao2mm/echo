@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sanitizeRuntimeForAgent } from "../src/lib/codexRuntime.js";
+import { permissionRuntimeForBackend, resolveRuntimeForAgent, sanitizeRuntimeForAgent } from "../src/lib/codexRuntime.js";
 
 test("sanitizeRuntimeForAgent selects the requested backend from desktop-advertised backends", () => {
   const runtime = sanitizeRuntimeForAgent(
@@ -59,9 +59,51 @@ test("sanitizeRuntimeForAgent selects the requested backend from desktop-adverti
   assert.equal(runtime.worktreeMode, "always");
 });
 
-test("sanitizeRuntimeForAgent keeps a desktop-advertised GPT-5.6 model and max effort", () => {
+test("sanitizeRuntimeForAgent does not enable optional worktree mode without an explicit request", () => {
   const runtime = sanitizeRuntimeForAgent(
-    { backendId: "codex", model: "gpt-5.6-sol", reasoningEffort: "max" },
+    { backendId: "codex" },
+    {
+      backendId: "codex",
+      provider: "codex",
+      backendName: "Codex",
+      sandbox: "workspace-write",
+      approvalPolicy: "on-request",
+      worktreeMode: "optional"
+    }
+  );
+
+  assert.equal(runtime.worktreeMode, "off");
+});
+
+test("runtime defaults to full access when a Workspace has no permission preference", () => {
+  const capability = {
+    backendId: "codex",
+    provider: "codex",
+    backends: [
+      { backendId: "codex", provider: "codex" },
+      { backendId: "claude-code", provider: "claude-code" }
+    ]
+  };
+
+  const codex = resolveRuntimeForAgent({ backendId: "codex" }, capability);
+  assert.equal(codex.permissionMode, "full");
+  assert.equal(codex.sandbox, "danger-full-access");
+  assert.equal(codex.approvalPolicy, "never");
+
+  const claude = resolveRuntimeForAgent({ backendId: "claude-code" }, capability);
+  assert.equal(claude.permissionMode, "full");
+  assert.equal(claude.sandbox, "danger-full-access");
+  assert.equal(claude.approvalPolicy, "never");
+  assert.equal(claude.providerPermissionMode, "bypassPermissions");
+});
+
+test("sanitizeRuntimeForAgent keeps desktop-advertised Codex model and max effort", () => {
+  const runtime = sanitizeRuntimeForAgent(
+    {
+      backendId: "codex",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "max"
+    },
     {
       backendId: "codex",
       provider: "codex",
@@ -69,7 +111,7 @@ test("sanitizeRuntimeForAgent keeps a desktop-advertised GPT-5.6 model and max e
       supportedModels: [
         {
           id: "gpt-5.6-sol",
-          displayName: "GPT-5.6 Sol",
+          displayName: "GPT 5.6 Sol",
           supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"]
         }
       ]
@@ -80,7 +122,7 @@ test("sanitizeRuntimeForAgent keeps a desktop-advertised GPT-5.6 model and max e
   assert.equal(runtime.reasoningEffort, "max");
 });
 
-test("sanitizeRuntimeForAgent rejects models the desktop did not advertise", () => {
+test("sanitizeRuntimeForAgent rejects Codex models that the desktop did not advertise", () => {
   const runtime = sanitizeRuntimeForAgent(
     { backendId: "codex", model: "gpt-unadvertised", reasoningEffort: "max" },
     {
@@ -158,7 +200,7 @@ test("sanitizeRuntimeForAgent keeps mobile permission mode independent of deskto
   assert.equal(runtime.approvalPolicy, "never");
 });
 
-test("sanitizeRuntimeForAgent ignores unknown permission strings and uses the backend default", () => {
+test("sanitizeRuntimeForAgent ignores unknown permission strings and uses full access", () => {
   const runtime = sanitizeRuntimeForAgent(
     {
       backendId: "claude-code",
@@ -180,7 +222,49 @@ test("sanitizeRuntimeForAgent ignores unknown permission strings and uses the ba
   );
 
   assert.equal(runtime.backendId, "claude-code");
-  assert.equal(runtime.permissionMode, "approve");
-  assert.equal(runtime.sandbox, "workspace-write");
-  assert.equal(runtime.approvalPolicy, "on-request");
+  assert.equal(runtime.permissionMode, "full");
+  assert.equal(runtime.sandbox, "danger-full-access");
+  assert.equal(runtime.approvalPolicy, "never");
+});
+
+test("provider-neutral permissions map explicitly to Codex and Claude runtimes", () => {
+  assert.deepEqual(permissionRuntimeForBackend("full", { backendId: "codex", provider: "codex" }), {
+    permissionMode: "full",
+    profile: "full",
+    sandbox: "danger-full-access",
+    approvalPolicy: "never",
+    providerPermissionMode: "full"
+  });
+  assert.deepEqual(permissionRuntimeForBackend("full", { backendId: "claude-code", provider: "claude-code" }), {
+    permissionMode: "full",
+    profile: "full",
+    sandbox: "danger-full-access",
+    approvalPolicy: "never",
+    providerPermissionMode: "bypassPermissions"
+  });
+});
+
+test("strict runtime resolution never falls back to another backend or permission", () => {
+  const capability = {
+    backendId: "codex",
+    provider: "codex",
+    supportedModels: [{ id: "gpt-5.5" }],
+    backends: [
+      { backendId: "codex", provider: "codex", supportedModels: [{ id: "gpt-5.5" }] },
+      {
+        backendId: "limited",
+        provider: "custom-runtime",
+        supportedPermissionModes: ["strict"],
+        supportedModels: [{ id: "limited-model" }]
+      }
+    ]
+  };
+  assert.throws(
+    () => resolveRuntimeForAgent({ backendId: "codex", model: "limited-model", permissionMode: "full" }, capability),
+    (error) => error.code === "runtime.model.unsupported"
+  );
+  assert.throws(
+    () => resolveRuntimeForAgent({ backendId: "limited", model: "limited-model", permissionMode: "full" }, capability),
+    (error) => error.code === "runtime.permission.unsupported"
+  );
 });

@@ -93,7 +93,7 @@ test("CodexBackendAdapter preserves the last successful capability probe while t
   assert.equal(busy.provider, "codex");
 });
 
-test("mergeConfiguredCodexModel advertises a configured GPT-5.6 model with max effort", () => {
+test("mergeConfiguredCodexModel advertises a provider-verified configured model with max effort", () => {
   const models = mergeConfiguredCodexModel(
     [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true, supportedReasoningEfforts: ["xhigh"] }],
     { model: "gpt-5.6-sol", reasoningEffort: "max" }

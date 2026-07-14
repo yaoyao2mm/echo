@@ -10,7 +10,7 @@ OpenSpec examples in nearby projects use `openspec/changes/<change-id>/proposal.
 - Detect OpenSpec directories named `.OpenSpec`, `openspec`, `.openspec`, or `OpenSpec`, preferring them in that order.
 - Generate a bounded, read-only summary for the selected workspace from the desktop agent.
 - Show a mobile-friendly progress panel with overview metrics, change timeline rows, expandable read-only task checklists, and refresh/error/offline states.
-- Reuse Echo's existing mobile panel behavior, auth model, desktop-agent routing, and workspace allowlist guarantees.
+- Reuse Echo's existing mobile panel behavior, auth model, target-agent routing, and workspace allowlist guarantees.
 
 **Non-Goals:**
 - Editing `tasks.md`, creating specs, archiving changes, or invoking the OpenSpec CLI from mobile.

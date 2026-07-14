@@ -4,11 +4,11 @@
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 14px;
-  min-height: 48px;
-  border: 1px solid rgba(126, 106, 84, 0.1);
-  border-radius: 16px;
-  background: rgba(255, 252, 247, 0.64);
-  padding: 10px 12px;
+  min-height: 44px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 8px 10px;
 }
 
 .theme-switch-copy {
@@ -40,8 +40,8 @@
 
 .theme-switch-track {
   position: relative;
-  width: 46px;
-  height: 28px;
+  width: 40px;
+  height: 24px;
   border-radius: 999px;
   background: rgba(126, 106, 84, 0.16);
   box-shadow: inset 0 0 0 1px rgba(126, 106, 84, 0.08);
@@ -57,8 +57,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   border-radius: 999px;
   background: rgba(255, 252, 247, 0.98);
   color: #746756;
@@ -70,8 +70,8 @@
 }
 
 .theme-switch-thumb svg {
-  width: 14px;
-  height: 14px;
+  width: 11px;
+  height: 11px;
   fill: currentColor;
 }
 
@@ -81,7 +81,7 @@
 }
 
 .theme-switch input:checked + .theme-switch-track .theme-switch-thumb {
-  transform: translateX(18px);
+  transform: translateX(16px);
   background: #eef3ff;
   color: #273354;
 }
@@ -132,6 +132,7 @@
 :root[data-theme="dark"] .compact-action,
 :root[data-theme="dark"] .sidebar-add-button,
 :root[data-theme="dark"] .sidebar-section-toggle,
+:root[data-theme="dark"] .sidebar-preferences-toggle,
 :root[data-theme="dark"] .topbar-quick-deploy {
   border-color: rgba(139, 154, 174, 0.18);
   background: rgba(23, 28, 36, 0.72);
@@ -144,6 +145,187 @@
   box-shadow: 0 24px 54px rgba(0, 0, 0, 0.34);
 }
 
+:root[data-theme="dark"] .agent-skills-panel {
+  border-color: rgba(139, 154, 174, 0.18);
+  background: rgba(17, 21, 27, 0.98);
+  box-shadow: 0 24px 54px rgba(0, 0, 0, 0.34);
+}
+
+:root[data-theme="dark"] .mcp-preference-trigger {
+  border-color: rgba(139, 154, 174, 0.16);
+  background: rgba(23, 28, 36, 0.72);
+}
+
+:root[data-theme="dark"] .mcp-preference-trigger:hover,
+:root[data-theme="dark"] .mcp-preference-trigger:focus-visible,
+:root[data-theme="dark"] .mcp-preference-trigger[aria-expanded="true"] {
+  border-color: rgba(139, 154, 174, 0.28);
+  background: rgba(28, 34, 44, 0.92);
+}
+
+:root[data-theme="dark"] .mcp-preference-control {
+  background: rgba(139, 154, 174, 0.14);
+  color: var(--muted);
+  box-shadow: inset 0 0 0 1px rgba(139, 154, 174, 0.08);
+}
+
+:root[data-theme="dark"] .mcp-subpage {
+  background: linear-gradient(180deg, rgb(22, 27, 35), rgb(17, 21, 27));
+}
+
+:root[data-theme="dark"] .mcp-page-head,
+:root[data-theme="dark"] .mcp-actions {
+  border-color: rgba(139, 154, 174, 0.14);
+}
+
+:root[data-theme="dark"] .mcp-actions {
+  background: rgb(17, 21, 27);
+}
+
+:root[data-theme="dark"] .mcp-back,
+:root[data-theme="dark"] .mcp-refresh,
+:root[data-theme="dark"] .mcp-close {
+  border-color: rgba(139, 154, 174, 0.18);
+  background: rgba(23, 28, 36, 0.72);
+}
+
+:root[data-theme="dark"] .mcp-profile-list,
+:root[data-theme="dark"] .mcp-server-card,
+:root[data-theme="dark"] .mcp-detail-panel,
+:root[data-theme="dark"] .agent-skill-import-form,
+:root[data-theme="dark"] .admin-agent-pill {
+  border-color: rgba(139, 154, 174, 0.16);
+  background: rgba(23, 28, 36, 0.72);
+}
+
+:root[data-theme="dark"] .mcp-server-card:not(:disabled):hover,
+:root[data-theme="dark"] .mcp-server-card:not(:disabled):focus-visible,
+:root[data-theme="dark"] .mcp-server-card.is-selected {
+  border-color: rgba(139, 154, 174, 0.3);
+  background: rgba(28, 34, 44, 0.94);
+}
+
+:root[data-theme="dark"] .mcp-server-card.is-disconnect {
+  border-color: rgba(139, 154, 174, 0.18);
+  background: rgba(139, 154, 174, 0.1);
+}
+
+:root[data-theme="dark"] .mcp-add-card {
+  background: rgba(23, 28, 36, 0.42);
+}
+
+:root[data-theme="dark"] .mcp-card-icon,
+:root[data-theme="dark"] .mcp-detail-icon,
+:root[data-theme="dark"] .mcp-add-card .mcp-card-icon,
+:root[data-theme="dark"] .admin-avatar {
+  background: rgba(139, 154, 174, 0.14);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .mcp-card-status {
+  box-shadow: 0 0 0 2px rgba(23, 28, 36, 0.92);
+}
+
+:root[data-theme="dark"] .mcp-preference-trigger.has-mcp-updates::after {
+  box-shadow: 0 0 0 2px rgba(23, 28, 36, 0.92);
+}
+
+:root[data-theme="dark"] .mcp-profile-button,
+:root[data-theme="dark"] .mcp-target-item {
+  border-color: rgba(139, 154, 174, 0.16);
+  background: rgba(23, 28, 36, 0.52);
+}
+
+:root[data-theme="dark"] .mcp-target-item.is-selected {
+  border-color: rgba(209, 129, 73, 0.32);
+  background: rgba(209, 129, 73, 0.1);
+  color: #e0a06c;
+}
+
+:root[data-theme="dark"] .mcp-target-item:hover,
+:root[data-theme="dark"] .mcp-target-item:focus-within {
+  border-color: rgba(139, 154, 174, 0.28);
+  background: rgba(28, 34, 44, 0.8);
+}
+
+:root[data-theme="dark"] .mcp-target-item input {
+  border-color: rgba(165, 173, 186, 0.56);
+  background: rgba(17, 21, 27, 0.82);
+}
+
+:root[data-theme="dark"] .mcp-target-item input:checked {
+  border-color: #d18149;
+  background: #d18149;
+}
+
+:root[data-theme="dark"] .mcp-detail-meta span {
+  border-color: rgba(139, 154, 174, 0.12);
+  background: rgba(17, 21, 27, 0.46);
+}
+
+:root[data-theme="dark"] .agent-skill-stat {
+  border-color: rgba(139, 154, 174, 0.12);
+  background: rgba(23, 28, 36, 0.34);
+}
+
+:root[data-theme="dark"] .agent-skill-import-field input {
+  border-color: rgba(139, 154, 174, 0.18);
+  background: rgba(17, 21, 27, 0.72);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .agent-skill-card-badge {
+  border-color: rgba(139, 154, 174, 0.18);
+}
+
+:root[data-theme="dark"] .agent-skill-item {
+  border-color: rgba(139, 154, 174, 0.16);
+  background: rgba(23, 28, 36, 0.52);
+}
+
+:root[data-theme="dark"] .mobile-settings-stack,
+:root[data-theme="dark"] .mcp-library-section .mcp-server-grid,
+:root[data-theme="dark"] .admin-user-grid,
+:root[data-theme="dark"] .admin-agent-list {
+  border-color: rgba(139, 154, 174, 0.16);
+  background: rgba(23, 28, 36, 0.48);
+}
+
+:root[data-theme="dark"] .mcp-server-item,
+:root[data-theme="dark"] .admin-user-item,
+:root[data-theme="dark"] .mobile-settings-stack > * + * {
+  border-color: rgba(139, 154, 174, 0.12);
+}
+
+:root[data-theme="dark"] .project-tree-menu {
+  border-color: rgba(139, 154, 174, 0.2);
+  background: rgba(23, 28, 36, 0.98);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
+}
+
+:root[data-theme="dark"] .mcp-add-shell input {
+  border-color: rgba(139, 154, 174, 0.16);
+  background: rgba(17, 21, 27, 0.68);
+}
+
+:root[data-theme="dark"] .admin-agent-dot {
+  box-shadow: 0 0 0 3px rgba(139, 154, 174, 0.08);
+}
+
+:root[data-theme="dark"] .admin-agent-pill.is-selected {
+  border-color: rgba(139, 154, 174, 0.3);
+  background: rgba(28, 34, 44, 0.94);
+}
+
+:root[data-theme="dark"] .admin-generated-token {
+  border-color: rgba(95, 143, 98, 0.24);
+  background: rgba(95, 143, 98, 0.12);
+}
+
+:root[data-theme="dark"] .admin-generated-token code {
+  background: rgba(17, 21, 27, 0.68);
+}
+
 :root[data-theme="dark"] .file-browser-panel,
 :root[data-theme="dark"] .open-spec-panel {
   border-color: rgba(139, 154, 174, 0.18);
@@ -153,12 +335,33 @@
 
 :root[data-theme="dark"] .quick-skill-item,
 :root[data-theme="dark"] .quick-skill-form,
-:root[data-theme="dark"] .quick-skill-choice,
 :root[data-theme="dark"] .quick-skill-form input[type="text"],
-:root[data-theme="dark"] .quick-skill-form select,
 :root[data-theme="dark"] .quick-skill-form textarea {
   border-color: rgba(139, 154, 174, 0.16);
   background: rgba(23, 28, 36, 0.72);
+}
+
+:root[data-theme="dark"] .agent-skill-button {
+  border-color: rgba(139, 154, 174, 0.16);
+  background: rgba(23, 28, 36, 0.72);
+}
+
+:root[data-theme="dark"] .mcp-profile-button {
+  border-color: rgba(139, 154, 174, 0.16);
+  background: rgba(23, 28, 36, 0.72);
+}
+
+:root[data-theme="dark"] .agent-skill-button:not(:disabled):hover,
+:root[data-theme="dark"] .agent-skill-button:not(:disabled):focus-visible,
+:root[data-theme="dark"] .mcp-profile-button.is-selected,
+:root[data-theme="dark"] .mcp-profile-button:not(:disabled):hover,
+:root[data-theme="dark"] .mcp-profile-button:not(:disabled):focus-visible {
+  border-color: rgba(139, 154, 174, 0.28);
+  background: rgba(28, 34, 44, 0.92);
+}
+
+:root[data-theme="dark"] .agent-skill-icon {
+  background: rgba(139, 154, 174, 0.14);
 }
 
 :root[data-theme="dark"] .quick-skill-form {
@@ -167,19 +370,7 @@
 }
 
 :root[data-theme="dark"] .quick-skill-field-label,
-:root[data-theme="dark"] .quick-skill-form-head strong,
-:root[data-theme="dark"] .quick-skill-form .quick-skill-checkbox {
-  color: var(--ink);
-}
-
-:root[data-theme="dark"] .quick-skill-choice .quick-skill-field-label {
-  color: var(--muted);
-}
-
-:root[data-theme="dark"] .quick-skill-choice .runtime-select-button:not(:disabled):hover,
-:root[data-theme="dark"] .quick-skill-choice .runtime-select-button:not(:disabled):focus-visible,
-:root[data-theme="dark"] .quick-skill-choice .runtime-select-button[aria-expanded="true"] {
-  background: rgba(139, 154, 174, 0.1);
+:root[data-theme="dark"] .quick-skill-form-head strong {
   color: var(--ink);
 }
 
@@ -194,11 +385,16 @@
 :root[data-theme="dark"] .file-preview,
 :root[data-theme="dark"] .file-browser-empty,
 :root[data-theme="dark"] .open-spec-overview,
+:root[data-theme="dark"] .open-spec-run-progress,
 :root[data-theme="dark"] .open-spec-metric,
 :root[data-theme="dark"] .open-spec-change,
 :root[data-theme="dark"] .open-spec-task-list,
 :root[data-theme="dark"] .open-spec-task {
   border-color: rgba(139, 154, 174, 0.12);
+}
+
+:root[data-theme="dark"] .open-spec-run-progress-track {
+  background: rgba(139, 154, 174, 0.16);
 }
 
 :root[data-theme="dark"] .open-spec-timeline::before {
@@ -207,6 +403,7 @@
 
 :root[data-theme="dark"] .open-spec-change-copy-button,
 :root[data-theme="dark"] .open-spec-change-menu-button,
+:root[data-theme="dark"] .open-spec-change-detail-actions button,
 :root[data-theme="dark"] .open-spec-check {
   border-color: rgba(139, 154, 174, 0.16);
   background: rgba(23, 28, 36, 0.72);
@@ -300,6 +497,34 @@
   color: #aab792;
 }
 
+:root[data-theme="dark"] .topbar-environment-avatar {
+  border-color: rgba(139, 154, 174, 0.2);
+  background: linear-gradient(145deg, rgba(45, 52, 64, 0.96), rgba(29, 34, 43, 0.9));
+  color: #d9dfcf;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 8px 18px rgba(0, 0, 0, 0.24);
+}
+
+:root[data-theme="dark"] .topbar-environment-avatar[data-state="online"] {
+  border-color: rgba(135, 164, 132, 0.26);
+  background: linear-gradient(145deg, rgba(43, 55, 45, 0.96), rgba(31, 41, 34, 0.9));
+  color: #c8d7bd;
+}
+
+:root[data-theme="dark"] .topbar-environment-avatar[data-state="busy"],
+:root[data-theme="dark"] .topbar-environment-avatar[data-state="info"] {
+  border-color: rgba(126, 151, 180, 0.26);
+  background: linear-gradient(145deg, rgba(39, 50, 64, 0.96), rgba(30, 39, 51, 0.9));
+  color: #c4d0df;
+}
+
+:root[data-theme="dark"] .topbar-environment-avatar[data-state="error"] {
+  border-color: rgba(184, 111, 101, 0.28);
+  background: linear-gradient(145deg, rgba(62, 42, 39, 0.96), rgba(46, 32, 31, 0.9));
+  color: #e0c4be;
+}
+
 :root[data-theme="dark"] .session-sidebar {
   border-color: rgba(139, 154, 174, 0.16);
   background: rgba(17, 21, 27, 0.98);
@@ -307,6 +532,17 @@
 
 :root[data-theme="dark"] .project-sheet-list.sidebar-project-list {
   background: transparent;
+}
+
+:root[data-theme="dark"] .agent-environment-option {
+  border-color: rgba(85, 95, 112, 0.78);
+  background: rgba(24, 29, 38, 0.68);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .agent-environment-option.active {
+  border-color: rgba(130, 149, 255, 0.42);
+  background: rgba(51, 61, 93, 0.44);
 }
 
 :root[data-theme="dark"] .sidebar-head,
@@ -360,7 +596,10 @@
 :root[data-theme="dark"] .sidebar-add-button:focus-visible,
 :root[data-theme="dark"] .sidebar-section-toggle:hover,
 :root[data-theme="dark"] .sidebar-section-toggle:focus-visible,
-:root[data-theme="dark"] .sidebar-section-toggle[aria-expanded="true"] {
+:root[data-theme="dark"] .sidebar-section-toggle[aria-expanded="true"],
+:root[data-theme="dark"] .sidebar-preferences-toggle:hover,
+:root[data-theme="dark"] .sidebar-preferences-toggle:focus-visible,
+:root[data-theme="dark"] .sidebar-preferences-toggle[aria-expanded="true"] {
   background: rgba(139, 154, 174, 0.1);
 }
 
@@ -505,6 +744,11 @@
   color: var(--ink);
 }
 
+:root[data-theme="dark"] .interaction-options {
+  border-color: rgba(139, 154, 174, 0.18);
+  background: rgba(17, 21, 27, 0.46);
+}
+
 :root[data-theme="dark"] .interaction-option:has(input[type="radio"]:checked) {
   border-color: rgba(124, 176, 196, 0.34);
   background: rgba(41, 88, 108, 0.2);
@@ -514,6 +758,17 @@
   border-color: rgba(139, 154, 174, 0.14);
   background: rgba(16, 20, 26, 0.94);
   color: var(--muted);
+}
+
+:root[data-theme="dark"] .session-git-details {
+  border-color: rgba(139, 154, 174, 0.16);
+  background: rgba(16, 20, 26, 0.98);
+  box-shadow: 0 16px 36px -24px rgba(2, 4, 8, 0.72);
+}
+
+:root[data-theme="dark"] .session-git-workspace,
+:root[data-theme="dark"] .thread-part-disclosure {
+  border-color: rgba(139, 154, 174, 0.14);
 }
 
 :root[data-theme="dark"] .session-status-mode {
@@ -566,7 +821,32 @@
   background: rgba(14, 18, 24, 0.92);
 }
 
-:root[data-theme="dark"] .turn-activity-line,
+:root[data-theme="dark"] .composer-mode-switch {
+  --switch-track: rgba(139, 154, 174, 0.18);
+  border-color: rgba(139, 154, 174, 0.16);
+  background: rgba(22, 27, 35, 0.7);
+}
+
+:root[data-theme="dark"] .composer-mode-switch-thumb {
+  background: rgba(239, 243, 248, 0.94);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.34),
+    inset 0 0 0 1px rgba(139, 154, 174, 0.12);
+}
+
+:root[data-theme="dark"] .composer-mode-switch.active,
+:root[data-theme="dark"] .composer-mode-switch[aria-checked="true"] {
+  --switch-track: rgba(122, 164, 136, 0.46);
+  border-color: rgba(122, 164, 136, 0.3);
+  background: rgba(122, 164, 136, 0.14);
+}
+
+:root[data-theme="dark"] .composer-mode-switch:not(:disabled):hover,
+:root[data-theme="dark"] .composer-mode-switch:not(:disabled):focus-visible {
+  border-color: rgba(139, 154, 174, 0.24);
+  background: rgba(22, 27, 35, 0.92);
+}
+
 :root[data-theme="dark"] .context-usage-details-line {
   border-color: rgba(139, 154, 174, 0.12);
   background: rgba(16, 20, 26, 0.94);
@@ -648,13 +928,32 @@
   background: rgba(0, 0, 0, 0.48);
 }
 
+:root[data-theme="dark"] .echo-confirm {
+  background: rgba(0, 0, 0, 0.46);
+}
+
+:root[data-theme="dark"] .echo-confirm-panel {
+  border-color: rgba(139, 154, 174, 0.16);
+  background: rgba(21, 26, 33, 0.97);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.36);
+}
+
+:root[data-theme="dark"] .echo-confirm .secondary {
+  background: rgba(255, 255, 255, 0.04);
+}
+
 @media (max-width: 760px) {
+  :root[data-theme="dark"] body.mobile-ui {
+    --mobile-composer-surface: rgb(17, 21, 27);
+    --mobile-composer-dock-surface: rgb(14, 18, 24);
+  }
+
   :root[data-theme="dark"] body.mobile-ui .composer {
     border-top-color: rgba(139, 154, 174, 0.14);
-    background: rgba(17, 21, 27, 0.99);
+    background: var(--mobile-composer-surface);
   }
 
   :root[data-theme="dark"] body.mobile-ui .composer-dock {
-    background: rgba(14, 18, 24, 0.96);
+    background: var(--mobile-composer-dock-surface);
   }
 }

@@ -4,6 +4,7 @@ import readline from "node:readline";
 import { config } from "../config.js";
 import { resolveDesktopCodexCommand } from "./codexCommand.js";
 import { buildCodexEnv } from "./codexRunner.js";
+import { codexWorktreeSharedCacheEnv } from "./codexWorktree.js";
 
 const defaultRequestTimeoutMs = 60000;
 
@@ -48,7 +49,7 @@ export class CodexAppServerClient extends EventEmitter {
     this.child = spawn(this.command, ["app-server", "--listen", "stdio://"], {
       cwd: this.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: buildCodexEnv()
+      env: buildCodexEnv({ ...process.env, ...codexWorktreeSharedCacheEnv() })
     });
 
     const stdout = readline.createInterface({ input: this.child.stdout });

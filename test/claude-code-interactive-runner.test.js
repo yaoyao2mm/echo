@@ -108,6 +108,99 @@ try {
   assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join("\n"));
 });
 
+test("ClaudeCodeInteractiveRuntime honors stop requests that arrive before a turn is registered", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-claude-early-stop-"));
+  const workspacePath = path.join(tempRoot, "workspace");
+  const fakeClaudePath = path.join(tempRoot, "fake-claude");
+  const recordPath = path.join(tempRoot, "fake-claude-started.json");
+
+  fs.mkdirSync(workspacePath, { recursive: true });
+  fs.writeFileSync(
+    fakeClaudePath,
+    `#!/usr/bin/env node
+import fs from "node:fs";
+
+fs.writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd() }), "utf8");
+process.stdout.write(JSON.stringify({ type: "result", result: "This turn should not start." }) + "\\n");
+`,
+    "utf8"
+  );
+  fs.chmodSync(fakeClaudePath, 0o755);
+
+  const script = `
+import assert from "node:assert/strict";
+import fs from "node:fs";
+
+process.env.ECHO_MODE = "relay";
+process.env.ECHO_TOKEN = "test-token";
+process.env.ECHO_RELAY_URL = "https://example.test";
+process.env.ECHO_CODEX_WORKSPACES = ${JSON.stringify(`demo=${workspacePath}`)};
+process.env.ECHO_CLAUDE_ENABLED = "true";
+process.env.ECHO_CLAUDE_COMMAND = ${JSON.stringify(fakeClaudePath)};
+
+const { ClaudeCodeInteractiveRuntime } = await import(${JSON.stringify(path.join(process.cwd(), "src/lib/claudeCodeInteractiveRunner.js"))});
+
+const events = [];
+let stopResult = null;
+const runtime = new ClaudeCodeInteractiveRuntime({
+  onEvents: async (_sessionId, nextEvents) => {
+    events.push(...nextEvents);
+    const started = nextEvents.find((event) => event.type === "thread.started");
+    if (started && !stopResult) {
+      stopResult = await runtime.handleCommand({
+        sessionId: "session-early-stop",
+        type: "stop",
+        projectId: "demo",
+        appThreadId: started.appThreadId,
+        payload: { reason: "Stopped immediately from mobile." },
+        runtime: {
+          backendId: "claude-code",
+          provider: "claude-code",
+          backendName: "Claude Code",
+          command: ${JSON.stringify(fakeClaudePath)},
+          permissionMode: "approve"
+        }
+      });
+    }
+  }
+});
+
+try {
+  const result = await runtime.handleCommand({
+    sessionId: "session-early-stop",
+    type: "start",
+    projectId: "demo",
+    payload: { prompt: "Start and then stop immediately.", attachments: [] },
+    runtime: {
+      backendId: "claude-code",
+      provider: "claude-code",
+      backendName: "Claude Code",
+      command: ${JSON.stringify(fakeClaudePath)},
+      permissionMode: "approve"
+    }
+  });
+
+  assert.equal(stopResult?.ok, true);
+  assert.equal(result.ok, true);
+  assert.equal(result.sessionStatus, "active");
+  assert.equal(fs.existsSync(${JSON.stringify(recordPath)}), false);
+  assert.equal(events.some((event) => event.type === "turn.interrupted"), true);
+  assert.equal(events.some((event) => event.raw?.method === "turn/completed"), false);
+} finally {
+  runtime.stop();
+}
+`;
+
+  const result = spawnSync(process.execPath, ["--input-type=module", "-"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    input: script,
+    timeout: 5000
+  });
+
+  assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join("\n"));
+});
+
 test("ClaudeCodeInteractiveRuntime rebuilds context from Echo memory when native resume fails", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-claude-recovery-runtime-"));
   const workspacePath = path.join(tempRoot, "workspace");

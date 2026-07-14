@@ -21,7 +21,8 @@ const REASONING_OPTIONS = [
   { value: "low", label: "低" },
   { value: "medium", label: "中" },
   { value: "high", label: "高" },
-  { value: "xhigh", label: "极高" }
+  { value: "xhigh", label: "极高" },
+  { value: "max", label: "最大" }
 ];
 
 const PERMISSION_MODE_OPTIONS = [
@@ -38,6 +39,7 @@ export function createAppContext(windowRef = window, documentRef = document) {
     windowRef.localStorage.setItem("echoToken", tokenFromUrl);
     windowRef.history.replaceState({}, "", windowRef.location.pathname);
   }
+  const storedUser = readStoredUser(windowRef.localStorage);
 
   return {
     window: windowRef,
@@ -55,9 +57,9 @@ export function createAppContext(windowRef = window, documentRef = document) {
     },
     elements: queryElements(documentRef),
     state: {
-      token: tokenFromUrl || windowRef.localStorage.getItem("echoToken") || "",
+      token: tokenFromUrl || readStoredEchoToken(windowRef.localStorage, storedUser) || "",
       sessionToken: windowRef.localStorage.getItem("echoSession") || "",
-      currentUser: readStoredUser(windowRef.localStorage),
+      currentUser: storedUser,
       authEnabled: true,
       themeMode: windowRef.localStorage.getItem("echoTheme") === "dark" ? "dark" : "light",
       worktreePreferenceEnabled: readStoredWorktreePreference(windowRef.localStorage),
@@ -77,13 +79,28 @@ export function createAppContext(windowRef = window, documentRef = document) {
       sessionStreamRenderFrame: 0,
       pendingSessionStreamRender: null,
       composingNewSession: false,
-      codexWorkspaces: readStoredCodexWorkspaces(windowRef.localStorage),
+      codexWorkspaces: readStoredCodexWorkspaces(windowRef.localStorage, storedUser),
+      codexAvailableWorkspaceKeys: [],
+      codexHiddenWorkspaceKeys: [],
+      codexAgents: [],
+      selectedAgentId: readStoredSelectedAgentId(windowRef.localStorage, storedUser),
       topbarContextTitle: "Echo",
       codexAgentOnline: false,
       codexAgentAvailable: false,
       codexLastAgentSeenAt: "",
       codexConnectionState: "connecting",
+      codexStatusUpdatedAt: "",
+      codexWorkspacesUpdatedAt: "",
+      codexRuntimeUpdatedAt: "",
+      codexStatusVersion: "",
       projectCreateBusy: false,
+      projectImportBusy: false,
+      projectImportRootId: "",
+      projectImportPath: "",
+      projectImportTree: null,
+      projectImportError: "",
+      expandedProjectConversationKeys: new Set(),
+      expandedToolDisclosureKeys: new Set(),
       showArchivedSessions: false,
       composerBusy: false,
       codexAgentRuntime: {},
@@ -92,12 +109,33 @@ export function createAppContext(windowRef = window, documentRef = document) {
       codexUnsupportedModels: [],
       codexSupportedModels: [],
       codexAllowedPermissionModes: [],
+      codexSupportedPermissionModes: [],
       runtimePreferences: readStoredRuntimePreferences(windowRef.localStorage),
+      runtimeMigrationCandidate: readStoredRuntimePreferences(windowRef.localStorage),
+      runtimePreferenceScopeKey: "",
+      runtimePreferenceVersion: 0,
+      runtimePreferenceLoading: false,
+      runtimePreferenceSaving: false,
+      runtimePreferenceError: "",
+      runtimePreferenceLoadPromise: null,
+      runtimePreferenceSavePromise: null,
+      runtimePreferencePendingSave: null,
+      runtimePreferenceRetries: new Map(),
       runtimeDirty: false,
       runtimeSelectControls: [],
       runtimeSelectControlsInstalled: false,
       runtimeSelectPopover: null,
       runtimeSelectPopoverPanel: null,
+      mcpSnapshot: null,
+      mcpProfiles: [],
+      mcpServers: [],
+      mcpClients: [],
+      mcpSelectedProfileId: "",
+      mcpSelectedServerId: "",
+      mcpAddOpen: false,
+      mcpTargetClients: readStoredMcpTargetClients(windowRef.localStorage),
+      mcpBusy: false,
+      mcpApplyCommandId: "",
       lastTopbarScrollY: 0,
       topbarScrollAccumulator: 0,
       topbarCollapsed: false,
@@ -105,18 +143,28 @@ export function createAppContext(windowRef = window, documentRef = document) {
       viewportStableWidth: 0,
       viewportKeyboardActive: false,
       viewportPromptFocused: false,
+      viewportFinalSyncTimer: null,
+      viewportFinalSyncToken: null,
       renderedCodexSessionId: "",
       renderedCodexSessionSignature: "",
       composerAttachments: [],
       composerAttachmentPendingCount: 0,
-      composerPlanMode: windowRef.localStorage.getItem("echoComposerMode") === "plan",
+      composerAttachmentPendingKind: "",
+      composerPlanMode: readStoredComposerMode(windowRef.localStorage, storedUser) === "plan",
       quickSkills: [],
       quickSkillsLoadedProjectId: null,
       quickSkillsBusy: false,
       quickSkillEditingId: "",
-      turnActivityDetailsOpen: false,
+      installedAgentSkills: [],
+      agentSkillSnapshot: null,
+      agentSkillSelectedId: "",
+      agentSkillBusy: false,
+      agentSkillCommandId: "",
+      desktopPluginSnapshot: null,
+      desktopPluginBusy: false,
+      gitDetailsOpenSessionId: "",
       contextUsageDetailsOpen: false,
-      autoCompactedSessionIds: new Set(),
+      autoCompactionRequestSessionIds: new Set(),
       openSpecProjectId: "",
       openSpecSummary: null,
       openSpecSummariesByProject: {},
@@ -124,12 +172,33 @@ export function createAppContext(windowRef = window, documentRef = document) {
       openSpecError: "",
       openSpecStale: false,
       openSpecRequestSeq: 0,
+      openSpecMode: "browse",
+      orchestrationSelectedIds: new Set(),
+      orchestrationOrder: [],
+      orchestrationRun: null,
+      orchestrationBusy: false,
+      orchestrationError: "",
+      orchestrationEventSource: null,
+      orchestrationPollTimer: null,
       fileBrowserProjectId: "",
       fileBrowserPath: "",
       fileBrowserTree: null,
+      fileBrowserTreesByProject: {},
+      fileBrowserStale: false,
       filePreview: null,
       fileBrowserBusy: false,
-      fileBrowserError: ""
+      fileBrowserError: "",
+      fileBrowserRequestSeq: 0,
+      fileBrowserContext: null,
+      fileBrowserReturnPoint: null,
+      filePreviewLine: 0,
+      filePreviewLineNotice: "",
+      adminSummary: null,
+      adminBusy: false,
+      adminSelectedUsername: "",
+      adminGeneratedPairing: null,
+      adminLoaded: false,
+      confirmDismiss: null
     }
   };
 }
@@ -143,22 +212,145 @@ export function installCore(app) {
     REASONING_OPTIONS: reasoningOptions
   } = app.constants;
 
+  app.storageUserKey = function storageUserKey(user = state.currentUser) {
+    return normalizeStorageUserKey(user);
+  };
+
+  app.scopedStorageKey = function scopedStorageKey(baseKey, user = state.currentUser) {
+    const userKey = app.storageUserKey(user);
+    return userKey ? `${baseKey}:${userKey}` : baseKey;
+  };
+
+  app.readScopedStorage = function readScopedStorage(baseKey, user = state.currentUser, options = {}) {
+    const scopedKey = app.scopedStorageKey(baseKey, user);
+    const scopedValue = localStorage.getItem(scopedKey);
+    if (scopedValue) return scopedValue;
+    if (options.fallbackLegacy === false || scopedKey === baseKey) return "";
+    return localStorage.getItem(baseKey) || "";
+  };
+
+  app.writeScopedStorage = function writeScopedStorage(baseKey, value, user = state.currentUser) {
+    const scopedKey = app.scopedStorageKey(baseKey, user);
+    localStorage.setItem(scopedKey, String(value || ""));
+    if (scopedKey !== baseKey) localStorage.removeItem(baseKey);
+  };
+
+  app.removeScopedStorage = function removeScopedStorage(baseKey, user = state.currentUser) {
+    const scopedKey = app.scopedStorageKey(baseKey, user);
+    localStorage.removeItem(scopedKey);
+    if (scopedKey !== baseKey) localStorage.removeItem(baseKey);
+  };
+
+  app.storedEchoToken = function storedEchoToken(user = state.currentUser, options = {}) {
+    return app.readScopedStorage("echoToken", user, options);
+  };
+
+  app.persistEchoToken = function persistEchoToken(token, user = state.currentUser) {
+    app.writeScopedStorage("echoToken", token, user);
+  };
+
+  app.clearEchoToken = function clearEchoToken(user = state.currentUser) {
+    app.removeScopedStorage("echoToken", user);
+  };
+
+  app.readStoredCodexWorkspaces = function readStoredCodexWorkspacesForUser(user = state.currentUser, options = {}) {
+    return readStoredCodexWorkspaces(localStorage, user, options);
+  };
+
+  app.storedCodexProjectKey = function storedCodexProjectKey(user = state.currentUser, options = {}) {
+    const fallbackLegacy = options.fallbackLegacy ?? !app.storageUserKey(user);
+    return app.readScopedStorage("echoCodexProject", user, { ...options, fallbackLegacy });
+  };
+
+  app.persistCodexProjectKey = function persistCodexProjectKey(projectKey, user = state.currentUser) {
+    app.writeScopedStorage("echoCodexProject", projectKey, user);
+  };
+
+  app.storedSelectedAgentId = function storedSelectedAgentId(user = state.currentUser, options = {}) {
+    const fallbackLegacy = options.fallbackLegacy ?? !app.storageUserKey(user);
+    return app.readScopedStorage("echoSelectedAgent", user, { ...options, fallbackLegacy });
+  };
+
+  app.persistSelectedAgentId = function persistSelectedAgentId(agentId, user = state.currentUser) {
+    const normalized = String(agentId || "").trim();
+    if (normalized) app.writeScopedStorage("echoSelectedAgent", normalized, user);
+    else app.removeScopedStorage("echoSelectedAgent", user);
+  };
+
+  app.clearCodexClientState = function clearCodexClientState(options = {}) {
+    const user = options.user || state.currentUser;
+    if (options.clearStorage !== false) {
+      app.removeScopedStorage("echoCodexProject", user);
+      app.removeScopedStorage("echoCodexWorkspaces", user);
+    }
+    if (options.clearPairing) {
+      app.clearEchoToken(user);
+      state.token = "";
+    }
+    state.codexWorkspaces = [];
+    state.codexAvailableWorkspaceKeys = [];
+    state.codexHiddenWorkspaceKeys = [];
+    state.codexAgents = [];
+    state.selectedAgentId = "";
+    state.codexAgentOnline = false;
+    state.codexAgentAvailable = false;
+    state.codexLastAgentSeenAt = "";
+    state.codexConnectionState = "connecting";
+    state.codexStatusUpdatedAt = "";
+    state.codexWorkspacesUpdatedAt = "";
+    state.codexRuntimeUpdatedAt = "";
+    state.codexStatusVersion = "";
+    state.selectedCodexJobId = "";
+    state.selectedCodexSession = null;
+    state.composingNewSession = false;
+    state.runtimePreferences = { backendId: "", permissionMode: "", model: "", reasoningEffort: "", mcpProfileId: "", worktreeMode: "off" };
+    state.runtimeMigrationCandidate = null;
+    state.runtimePreferenceScopeKey = "";
+    state.runtimePreferenceVersion = 0;
+    state.runtimePreferenceLoading = false;
+    state.runtimePreferenceError = "";
+    state.runtimePreferenceLoadPromise = null;
+    state.runtimePreferencePendingSave = null;
+    state.runtimePreferenceRetries?.clear?.();
+    state.projectImportBusy = false;
+    state.projectImportRootId = "";
+    state.projectImportPath = "";
+    state.projectImportTree = null;
+    state.projectImportError = "";
+    state.desktopPluginSnapshot = null;
+    state.desktopPluginBusy = false;
+    state.openSpecSummary = null;
+    state.openSpecProjectId = "";
+    state.expandedProjectConversationKeys?.clear?.();
+    if (elements.codexProject) elements.codexProject.value = "";
+  };
+
   app.bindViewportMetrics = function bindViewportMetrics() {
     app.syncViewportMetrics();
     window.addEventListener("resize", app.syncViewportMetrics, { passive: true });
     window.visualViewport?.addEventListener("resize", app.syncViewportMetrics, { passive: true });
     window.visualViewport?.addEventListener("scroll", app.syncViewportMetrics, { passive: true });
     elements.codexPrompt?.addEventListener("focus", () => {
+      app.cancelViewportFinalSync();
       state.viewportPromptFocused = true;
       app.queueViewportSync();
     });
     elements.codexPrompt?.addEventListener("blur", () => {
       state.viewportPromptFocused = false;
-      app.queueViewportSync();
+      app.queueViewportSync({ final: true });
     });
   };
 
+  app.ensureComposerModeSwitchPlacement = function ensureComposerModeSwitchPlacement() {
+    const button = elements.composerPlanModeButton;
+    const meta = document.querySelector?.(".composer-status-meta");
+    if (!button || !meta) return;
+    if (button.parentElement === meta && meta.firstElementChild === button) return;
+    meta.insertBefore?.(button, meta.firstElementChild || null);
+  };
+
   app.syncViewportMetrics = function syncViewportMetrics() {
+    app.ensureComposerModeSwitchPlacement?.();
     const keepConversationBottom = app.shouldKeepConversationAtBottom();
     const viewport = window.visualViewport;
     const compactMode = app.usesCompactTopbarMode();
@@ -175,15 +367,17 @@ export function installCore(app) {
       if (widthChanged) state.viewportKeyboardActive = false;
     }
 
-    const stableHeight = Math.max(state.viewportStableHeight || 0, baseHeight);
+    let stableHeight = state.viewportStableHeight || baseHeight;
     const keyboardHeight = Math.max(0, stableHeight - visualHeight);
     const keyboardLikely = compactMode && keyboardHeight >= 96;
     const promptFocused = state.viewportPromptFocused || document.activeElement === elements.codexPrompt;
     const keyboardActive = keyboardLikely && (promptFocused || state.viewportKeyboardActive);
     state.viewportKeyboardActive = keyboardActive;
     if (!keyboardActive) {
-      state.viewportStableHeight = stableHeight;
+      app.cancelViewportFinalSync();
+      state.viewportStableHeight = baseHeight;
       state.viewportStableWidth = baseWidth;
+      stableHeight = baseHeight;
     }
 
     const nextHeight = keyboardActive ? visualHeight : state.viewportStableHeight || baseHeight;
@@ -208,12 +402,39 @@ export function installCore(app) {
     app.restoreConversationBottomIfNeeded(keepConversationBottom);
   };
 
-  app.queueViewportSync = function queueViewportSync() {
+  app.scheduleViewportFinalSync = function scheduleViewportFinalSync(delay = 640) {
+    if (state.viewportFinalSyncTimer || state.viewportFinalSyncToken) return;
+    const token = {};
+    state.viewportFinalSyncToken = token;
+    const run = () => {
+      if (state.viewportFinalSyncToken !== token) return;
+      state.viewportFinalSyncTimer = null;
+      state.viewportFinalSyncToken = null;
+      app.syncViewportMetrics();
+    };
+    const timer = window.setTimeout(run, delay);
+    if (state.viewportFinalSyncToken === token) {
+      state.viewportFinalSyncTimer = timer;
+    }
+  };
+
+  app.cancelViewportFinalSync = function cancelViewportFinalSync() {
+    state.viewportFinalSyncToken = null;
+    if (state.viewportFinalSyncTimer) {
+      window.clearTimeout?.(state.viewportFinalSyncTimer);
+      state.viewportFinalSyncTimer = null;
+    }
+  };
+
+  app.queueViewportSync = function queueViewportSync(options = {}) {
     window.requestAnimationFrame(() => {
       app.syncViewportMetrics();
     });
     window.setTimeout(app.syncViewportMetrics, 120);
     window.setTimeout(app.syncViewportMetrics, 320);
+    if (options.final) {
+      app.scheduleViewportFinalSync();
+    }
   };
 
   app.applyThemeMode = function applyThemeMode(themeMode, options = {}) {
@@ -382,6 +603,22 @@ export function installCore(app) {
     app.scrollConversationToBottom({ forceTopbarVisible: false });
   };
 
+  app.composerAttachmentPendingText = function composerAttachmentPendingText() {
+    const count = Number(state.composerAttachmentPendingCount || 0);
+    const kind = String(state.composerAttachmentPendingKind || "").trim();
+    if (count <= 0) return "";
+    if (kind === "image") return count === 1 ? "正在处理 1 张图片…" : `正在处理 ${count} 张图片…`;
+    if (kind === "file") return count === 1 ? "正在处理 1 个文件…" : `正在处理 ${count} 个文件…`;
+    return count === 1 ? "正在处理 1 个附件…" : `正在处理 ${count} 个附件…`;
+  };
+
+  app.composerAttachmentPendingActionLabel = function composerAttachmentPendingActionLabel() {
+    const kind = String(state.composerAttachmentPendingKind || "").trim();
+    if (kind === "image") return "处理图片";
+    if (kind === "file") return "处理文件";
+    return "处理附件";
+  };
+
   app.refreshComposerStatusBar = function refreshComposerStatusBar() {
     if (!elements.composerStatusText) return;
 
@@ -390,10 +627,7 @@ export function installCore(app) {
     if (state.composerBusy) {
       status = "正在发送…";
     } else if (state.composerAttachmentPendingCount > 0) {
-      status =
-        state.composerAttachmentPendingCount === 1
-          ? "正在处理 1 张图片…"
-          : `正在处理 ${state.composerAttachmentPendingCount} 张图片…`;
+      status = app.composerAttachmentPendingText();
     } else if (state.codexConnectionState === "error") {
       status = "连接中断，可继续浏览";
     } else if (app.sessionCancelRequested?.(session)) {
@@ -407,11 +641,13 @@ export function installCore(app) {
     } else if (session?.status === "running") {
       status = app.runningSessionStatusText?.(session) || `${app.activeAgentLabel(session)} 正在处理`;
     } else if (session?.pendingCommandCount > 0) {
-      status = "消息已排队";
+      status = app.turnActivityForSession?.(session)?.text || "等待桌面接收任务";
     } else if (session?.status === "failed" && app.sessionCanRecoverFailure(session)) {
       status = "上一轮失败，可继续";
     } else if (session && !app.sessionCanAcceptFollowUp(session)) {
       status = "当前会话不可继续";
+    } else if (session?.execution?.mode === "worktree") {
+      status = "继续将在当前隔离 worktree 中运行";
     } else if (!state.codexAgentAvailable) {
       status = "等待桌面 agent";
     } else if (!app.currentProjectId()) {
@@ -421,8 +657,6 @@ export function installCore(app) {
     }
     elements.composerStatusText.textContent = status;
     elements.composerStatusText.classList.toggle("is-empty", !status);
-    app.refreshTurnActivityToggle?.(session, status);
-    app.refreshTurnActivityLine?.();
     app.refreshContextUsageIndicator();
   };
 
@@ -549,6 +783,9 @@ export function installCore(app) {
     if (elements.statusText) {
       elements.statusText.textContent = text;
     }
+    if (elements.topbarEnvironmentAvatar) {
+      elements.topbarEnvironmentAvatar.dataset.state = indicatorState;
+    }
     if (elements.mobileStatusIndicator) {
       elements.mobileStatusIndicator.dataset.state = indicatorState;
       elements.mobileStatusIndicator.title = text;
@@ -557,11 +794,50 @@ export function installCore(app) {
     }
   };
 
+  app.setTopbarContextTitle = function setTopbarContextTitle(label = "") {
+    const selectedProject = String(elements.codexProject?.value || app.storedCodexProjectKey?.() || "").trim();
+    const fallback = app.canUseWorkbench?.() || selectedProject ? "等待桌面" : "Echo";
+    const text = String(label || "").trim() || fallback;
+    state.topbarContextTitle = text;
+    if (elements.topbarContextTitle) {
+      elements.topbarContextTitle.textContent = app.compactTopbarContextLabel(text);
+      elements.topbarContextTitle.title = text;
+    }
+    if (elements.topbarEnvironmentAvatar) {
+      elements.topbarEnvironmentAvatar.textContent = app.topbarContextInitial(text);
+      elements.topbarEnvironmentAvatar.title = text;
+      elements.topbarEnvironmentAvatar.hidden = !text;
+    }
+  };
+
+  app.compactTopbarContextLabel = function compactTopbarContextLabel(label = "") {
+    const text = String(label || "").trim();
+    if (!text) return "";
+    const hostLike = /\.local/i.test(text) || /[-_][a-f0-9]{8,}(?:[-_][a-f0-9]{4,})*/i.test(text);
+    let compact = text
+      .replace(/\.local.*$/i, "")
+      .replace(/[-_][a-f0-9]{8,}(?:[-_][a-f0-9]{4,})*$/i, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (hostLike || (compact.length > 12 && compact.includes("-"))) return "";
+    compact = compact.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+    return compact || text;
+  };
+
+  app.topbarContextInitial = function topbarContextInitial(label = "") {
+    const text = String(label || "").trim() || app.compactTopbarContextLabel(label);
+    const match = Array.from(text).find((char) => /[\p{L}\p{N}]/u.test(char));
+    return (match || "E").toLocaleUpperCase("zh-CN");
+  };
+
   app.initRuntimeControls = function initRuntimeControls() {
     app.populateRuntimeSelect(elements.codexBackend, backendOptions);
     app.populateRuntimeSelect(elements.codexPermissionMode, permissionOptions);
     app.populateRuntimeSelect(elements.codexModel, modelOptions);
     app.populateRuntimeSelect(elements.codexReasoningEffort, reasoningOptions);
+    if (elements.codexMcpProfile) {
+      app.populateRuntimeSelect(elements.codexMcpProfile, [{ value: "", label: "桌面默认" }]);
+    }
     app.installRuntimeSelectControls();
     app.applyRuntimeDraft(state.runtimePreferences, { persist: false, dirty: false });
     app.refreshRuntimeDefaultOptions();
@@ -586,8 +862,7 @@ export function installCore(app) {
       { select: elements.codexPermissionMode, label: "权限" },
       { select: elements.codexModel, label: "模型" },
       { select: elements.codexReasoningEffort, label: "推理" },
-      { select: elements.quickSkillScope, label: "范围" },
-      { select: elements.quickSkillMode, label: "模式" }
+      { select: elements.codexMcpProfile, label: "MCP" }
     ];
 
     state.runtimeSelectControls = configs
@@ -726,9 +1001,18 @@ export function installCore(app) {
 
   app.runtimeSelectOptionsForPopover = function runtimeSelectOptionsForPopover(select) {
     const options = Array.from(select?.options || []);
-    if (select?.id !== "codexBackend") return options;
-    const concreteOptions = options.filter((option) => String(option.value || "").trim());
-    return concreteOptions.length > 0 ? concreteOptions : options;
+    if (select?.id === "codexBackend") {
+      const concreteOptions = options.filter((option) => String(option.value || "").trim());
+      return concreteOptions.length > 0 ? concreteOptions : options;
+    }
+    if (!["codexModel", "codexPermissionMode", "codexReasoningEffort"].includes(select?.id)) return options;
+    const inherited = options.find((option) => !String(option.value || "").trim());
+    if (!inherited) return options;
+    const inheritedLabel = String(inherited.textContent || "").trim();
+    return options.filter((option) => {
+      if (option === inherited) return true;
+      return String(option.textContent || "").trim() !== inheritedLabel;
+    });
   };
 
   app.positionRuntimeSelectPopover = function positionRuntimeSelectPopover(select, button, panel) {
@@ -766,6 +1050,7 @@ export function installCore(app) {
   };
 
   app.handleRuntimeSelectOptionClick = function handleRuntimeSelectOptionClick(event) {
+    event.stopPropagation?.();
     const target = event.target instanceof Element ? event.target : null;
     const item = target?.closest?.(".runtime-select-option");
     if (!item || item.disabled) return;
@@ -837,6 +1122,7 @@ export function installCore(app) {
     const selectedBackend = app.backendRuntimeById(requestedBackendId) || state.codexAgentRuntime || {};
     const requestedModel = String(elements.codexModel.value || "").trim();
     const requestedPermissionMode = String(elements.codexPermissionMode.value || "").trim();
+    const requestedMcpProfileId = String(elements.codexMcpProfile?.value || "").trim();
     const modelSupportedBySelectedBackend = !requestedModel || app.backendRuntimeSupportsModel(selectedBackend, requestedModel);
     const permissionMode = app.normalizePermissionMode(requestedPermissionMode);
     const resolved = app.runtimeChoiceWithFallback(
@@ -845,6 +1131,7 @@ export function installCore(app) {
         model: modelSupportedBySelectedBackend ? requestedModel : "",
         permissionMode,
         reasoningEffort: elements.codexReasoningEffort.value,
+        mcpProfileId: requestedMcpProfileId,
         worktreeMode: app.requestedWorktreeMode()
       },
       state.runtimePreferences
@@ -853,21 +1140,24 @@ export function installCore(app) {
     resolved.model = modelSupportedBySelectedBackend ? requestedModel : "";
     resolved.permissionMode = permissionMode;
     resolved.reasoningEffort = String(elements.codexReasoningEffort.value || "").trim();
+    resolved.mcpProfileId = requestedMcpProfileId;
     resolved.worktreeMode = app.requestedWorktreeMode();
     app.applyRuntimeDraft(resolved, { dirty: true });
     app.refreshRuntimeSelectControls();
+    if (app.installedAgentSkillsForRuntime) {
+      state.installedAgentSkills = app.installedAgentSkillsForRuntime(state.codexAgentRuntime || {});
+      app.renderAgentSkills?.();
+    }
     app.refreshActiveSessionHeader();
     app.refreshComposerMeta();
   };
 
   app.applyWorktreeModePreference = function applyWorktreeModePreference(enabled, options = {}) {
     state.worktreePreferenceEnabled = enabled !== false;
-    if (options.persist !== false) {
-      localStorage.setItem("echoCodexWorktreeEnabled", state.worktreePreferenceEnabled ? "true" : "false");
-    }
     state.runtimeDirty = true;
     state.runtimePreferences = app.currentRuntimeDraft();
     app.writeStoredRuntimePreferences(state.runtimePreferences);
+    if (options.persist !== false) app.queueWorkspaceRuntimePreferenceSave?.(state.runtimePreferences);
     app.refreshWorktreeModeControls();
     app.refreshActiveSessionHeader();
     app.refreshComposerMeta();
@@ -879,6 +1169,7 @@ export function installCore(app) {
       permissionMode: elements.codexPermissionMode.value,
       model: elements.codexModel.value,
       reasoningEffort: elements.codexReasoningEffort.value,
+      mcpProfileId: elements.codexMcpProfile?.value || "",
       worktreeMode: app.requestedWorktreeMode()
     });
     const preset = app.permissionRuntimeForMode(next.permissionMode);
@@ -887,8 +1178,7 @@ export function installCore(app) {
       backendId: next.backendId,
       profile: next.permissionMode || "",
       sandbox: next.permissionMode ? preset.sandbox : "",
-      approvalPolicy: next.permissionMode ? preset.approvalPolicy : "",
-      worktreeModeExplicit: true
+      approvalPolicy: next.permissionMode ? preset.approvalPolicy : ""
     };
   };
 
@@ -905,6 +1195,7 @@ export function installCore(app) {
       approvalPolicy: permissionMode ? preset.approvalPolicy : next.approvalPolicy || base.approvalPolicy,
       model: next.model || base.model,
       reasoningEffort: next.reasoningEffort || base.reasoningEffort,
+      mcpProfileId: next.mcpProfileId || base.mcpProfileId,
       worktreeMode: next.worktreeMode || base.worktreeMode || app.requestedWorktreeMode()
     };
   };
@@ -926,18 +1217,28 @@ export function installCore(app) {
       next.reasoningEffort,
       app.reasoningDisplayName(next.reasoningEffort)
     );
-    app.refreshRuntimeDefaultOptions({ selectedModel: next.model });
+    app.refreshRuntimeDefaultOptions({ selectedModel: next.model, selectedReasoningEffort: next.reasoningEffort });
     elements.codexPermissionMode.value = next.permissionMode;
     elements.codexModel.value = app.selectHasEnabledOption(elements.codexModel, next.model) ? next.model : "";
-    elements.codexReasoningEffort.value = next.reasoningEffort;
+    elements.codexReasoningEffort.value = app.selectHasEnabledOption(elements.codexReasoningEffort, next.reasoningEffort)
+      ? next.reasoningEffort
+      : "";
+    next.model = elements.codexModel.value;
+    next.reasoningEffort = elements.codexReasoningEffort.value;
+    if (elements.codexMcpProfile) {
+      app.ensureMcpProfileOption?.(next.mcpProfileId);
+      elements.codexMcpProfile.value = app.selectHasEnabledOption(elements.codexMcpProfile, next.mcpProfileId) ? next.mcpProfileId : "";
+    }
     app.refreshRuntimeSelectControls();
     if (next.worktreeMode) {
       state.worktreePreferenceEnabled = next.worktreeMode !== "off";
     }
+    app.refreshMcpPreferenceSummary?.();
     state.runtimeDirty = Boolean(options.dirty);
     if (options.persist !== false) {
       state.runtimePreferences = next;
       app.writeStoredRuntimePreferences(next);
+      if (options.remote !== false) app.queueWorkspaceRuntimePreferenceSave?.(next);
     }
     app.refreshWorktreeModeControls();
   };
@@ -945,7 +1246,6 @@ export function installCore(app) {
   app.refreshRuntimeDefaultOptions = function refreshRuntimeDefaultOptions(options = {}) {
     const backendOption = elements.codexBackend.querySelector('option[value=""]');
     const permissionOption = elements.codexPermissionMode.querySelector('option[value=""]');
-    const reasoningOption = elements.codexReasoningEffort.querySelector('option[value=""]');
     if (backendOption) {
       backendOption.textContent = app.backendDisplayName(
         state.codexAgentRuntime.backendId || state.codexAgentRuntime.provider || state.codexAgentRuntime.backendName || "codex"
@@ -954,15 +1254,14 @@ export function installCore(app) {
     }
     if (permissionOption) {
       permissionOption.textContent = state.codexAgentRuntime.permissionMode
-        ? `默认 · ${app.permissionModeDisplayName(state.codexAgentRuntime.permissionMode)}`
-        : "默认";
+        ? app.permissionModeDisplayName(state.codexAgentRuntime.permissionMode)
+        : app.permissionModeDisplayName(app.permissionModeFromRuntime(state.codexAgentRuntime)) || "桌面配置";
       permissionOption.dataset.baseLabel = permissionOption.textContent;
     }
-    if (reasoningOption) {
-      reasoningOption.textContent = state.codexAgentRuntime.reasoningEffort
-        ? `默认 · ${app.reasoningDisplayName(state.codexAgentRuntime.reasoningEffort)}`
-        : "默认";
-      reasoningOption.dataset.baseLabel = reasoningOption.textContent;
+    const mcpOption = elements.codexMcpProfile?.querySelector('option[value=""]');
+    if (mcpOption) {
+      mcpOption.textContent = app.defaultMcpProfileSelectLabel?.() || "桌面默认";
+      mcpOption.dataset.baseLabel = mcpOption.textContent;
     }
     for (const backend of state.codexBackendRuntimes || []) {
       app.ensureRuntimeOption(
@@ -973,11 +1272,29 @@ export function installCore(app) {
       );
     }
     app.refreshModelOptionAvailability(options.selectedModel);
+    const requestedReasoningEffort = String(
+      options.selectedReasoningEffort ?? elements.codexReasoningEffort.value ?? ""
+    ).trim();
+    app.populateRuntimeSelect(
+      elements.codexReasoningEffort,
+      app.reasoningOptionsForSelectedModel(elements.codexModel.value)
+    );
+    elements.codexReasoningEffort.value = app.selectHasEnabledOption(elements.codexReasoningEffort, requestedReasoningEffort)
+      ? requestedReasoningEffort
+      : "";
+    const reasoningOption = elements.codexReasoningEffort.querySelector('option[value=""]');
+    if (reasoningOption) {
+      const defaultReasoningEffort = app.defaultReasoningEffortForSelectedModel(elements.codexModel.value);
+      reasoningOption.textContent = defaultReasoningEffort
+        ? app.reasoningDisplayName(defaultReasoningEffort)
+        : "桌面配置";
+      reasoningOption.dataset.baseLabel = reasoningOption.textContent;
+    }
     const modelOption = elements.codexModel.querySelector('option[value=""]');
     if (modelOption) {
       modelOption.textContent = state.codexAgentRuntime.model
-        ? `默认 · ${app.modelDisplayName(state.codexAgentRuntime.model)}`
-        : "默认";
+        ? app.modelDisplayName(state.codexAgentRuntime.model)
+        : "桌面配置";
       modelOption.dataset.baseLabel = modelOption.textContent;
     }
     app.refreshPermissionModeAvailability();
@@ -1051,6 +1368,40 @@ export function installCore(app) {
     return app.dedupeRuntimeOptions(options);
   };
 
+  app.reasoningOptionsForSelectedModel = function reasoningOptionsForSelectedModel(selectedModel = "") {
+    const selectedBackendId = app.selectedRuntimeBackendId();
+    const selectedBackend = app.backendRuntimeById(selectedBackendId) || state.codexAgentRuntime || {};
+    const effectiveModel = String(selectedModel || selectedBackend.model || "").trim();
+    const model = Array.isArray(selectedBackend.supportedModels)
+      ? selectedBackend.supportedModels.find(
+          (item) => String(item?.id || item?.model || "").trim() === effectiveModel
+        )
+      : null;
+    const supportedEfforts = new Set(
+      Array.isArray(model?.supportedReasoningEfforts)
+        ? model.supportedReasoningEfforts
+            .map((item) => String(item?.reasoningEffort || item?.value || item || "").trim().toLowerCase())
+            .filter(Boolean)
+        : []
+    );
+    if (supportedEfforts.size === 0) return reasoningOptions;
+    return reasoningOptions.filter((option) => !option.value || supportedEfforts.has(option.value));
+  };
+
+  app.defaultReasoningEffortForSelectedModel = function defaultReasoningEffortForSelectedModel(selectedModel = "") {
+    const selectedBackendId = app.selectedRuntimeBackendId();
+    const selectedBackend = app.backendRuntimeById(selectedBackendId) || state.codexAgentRuntime || {};
+    const effectiveModel = String(selectedModel || selectedBackend.model || "").trim();
+    const model = Array.isArray(selectedBackend.supportedModels)
+      ? selectedBackend.supportedModels.find(
+          (item) => String(item?.id || item?.model || "").trim() === effectiveModel
+        )
+      : null;
+    return String(model?.defaultReasoningEffort || model?.default_reasoning_effort || selectedBackend.reasoningEffort || "")
+      .trim()
+      .toLowerCase();
+  };
+
   app.selectedRuntimeBackendId = function selectedRuntimeBackendId() {
     const selectedValue = String(elements.codexBackend?.value || "").trim();
     if (selectedValue) return selectedValue;
@@ -1103,14 +1454,25 @@ export function installCore(app) {
   };
 
   app.refreshPermissionModeAvailability = function refreshPermissionModeAvailability() {
+    const supportedModes = new Set(app.supportedPermissionModesForBackend(state.codexAgentRuntime));
     for (const option of Array.from(elements.codexPermissionMode.options || [])) {
       const value = String(option.value || "").trim();
       if (!value) continue;
       const baseLabel = app.permissionModeDisplayName(value);
       option.dataset.baseLabel = baseLabel;
-      option.disabled = false;
+      option.disabled = supportedModes.size > 0 && !supportedModes.has(value);
       option.textContent = baseLabel;
     }
+  };
+
+  app.supportedPermissionModesForBackend = function supportedPermissionModesForBackend(backend = {}) {
+    const advertised = Array.isArray(backend.supportedPermissionModes)
+      ? backend.supportedPermissionModes.map((mode) => app.normalizePermissionMode(mode)).filter(Boolean)
+      : [];
+    if (advertised.length > 0) return [...new Set(advertised)];
+    const identity = `${backend.backendId || ""} ${backend.provider || ""}`.toLowerCase();
+    if (/codex|claude|anthropic|deepseek|volcengine/.test(identity)) return ["strict", "approve", "full"];
+    return [];
   };
 
   app.ensureRuntimeOption = function ensureRuntimeOption(select, options, value, fallbackLabel) {
@@ -1141,6 +1503,7 @@ export function installCore(app) {
     );
     const rawModel = String(runtime.model || "").trim();
     const reasoningEffort = String(runtime.reasoningEffort || runtime.effort || "").trim().toLowerCase();
+    const mcpProfileId = normalizeStoredMcpProfileId(runtime.mcpProfileId || runtime.mcpProfile || runtime.mcp);
     return {
       backendId,
       permissionMode,
@@ -1148,22 +1511,208 @@ export function installCore(app) {
       approvalPolicy: app.normalizeApprovalPolicyValue(runtime.approvalPolicy),
       model: knownModelValues.has(rawModel) || rawModel ? rawModel : "",
       reasoningEffort: knownReasoningValues.has(reasoningEffort) || reasoningEffort ? reasoningEffort : "",
-      worktreeMode: app.normalizeWorktreeModeValue(runtime.worktreeMode),
-      worktreeModeExplicit:
-        runtime.worktreeModeExplicit === true || (runtime.worktreeModeExplicit !== false && Object.prototype.hasOwnProperty.call(runtime, "worktreeMode"))
+      mcpProfileId,
+      worktreeMode: app.normalizeWorktreeModeValue(runtime.worktreeMode)
     };
   };
 
   app.writeStoredRuntimePreferences = function writeStoredRuntimePreferences(runtime = {}) {
     const next = app.normalizeRuntimeChoice(runtime);
-    if (next.backendId) localStorage.setItem("echoCodexBackendId", next.backendId);
-    else localStorage.removeItem("echoCodexBackendId");
-    if (next.permissionMode) localStorage.setItem("echoCodexPermissionMode", next.permissionMode);
-    else localStorage.removeItem("echoCodexPermissionMode");
-    if (next.model) localStorage.setItem("echoCodexModel", next.model);
-    else localStorage.removeItem("echoCodexModel");
-    if (next.reasoningEffort) localStorage.setItem("echoCodexReasoningEffort", next.reasoningEffort);
-    else localStorage.removeItem("echoCodexReasoningEffort");
+    const scopeKey = state.runtimePreferenceScopeKey || app.workspaceRuntimePreferenceScope?.()?.key || "";
+    if (!scopeKey) return;
+    localStorage.setItem(app.workspaceRuntimePreferenceCacheKey(scopeKey), JSON.stringify({
+      ...next,
+      version: state.runtimePreferenceVersion,
+      cachedAt: new Date().toISOString()
+    }));
+  };
+
+  app.workspaceRuntimePreferenceScope = function workspaceRuntimePreferenceScope() {
+    const workspace = app.currentWorkspace?.();
+    const targetAgentId = String(workspace?.agentId || app.currentTargetAgentId?.() || "").trim();
+    const workspaceId = String(workspace?.id || app.currentProjectId?.() || "").trim();
+    if (!targetAgentId || !workspaceId) return null;
+    return { targetAgentId, workspaceId, key: `${targetAgentId}:${workspaceId}` };
+  };
+
+  app.workspaceRuntimePreferenceCacheKey = function workspaceRuntimePreferenceCacheKey(scopeKey) {
+    const userKey = app.storageUserKey?.(state.currentUser) || "local";
+    return `echoWorkspaceRuntimePreference:${encodeURIComponent(userKey)}:${encodeURIComponent(scopeKey)}`;
+  };
+
+  app.readWorkspaceRuntimePreferenceCache = function readWorkspaceRuntimePreferenceCache(scopeKey) {
+    try {
+      const value = JSON.parse(localStorage.getItem(app.workspaceRuntimePreferenceCacheKey(scopeKey)) || "null");
+      return value && typeof value === "object" ? value : null;
+    } catch {
+      return null;
+    }
+  };
+
+  app.clearLegacyRuntimePreferences = function clearLegacyRuntimePreferences() {
+    for (const key of [
+      "echoCodexBackendId",
+      "echoCodexPermissionMode",
+      "echoCodexModel",
+      "echoCodexReasoningEffort",
+      "echoCodexMcpProfile",
+      "echoCodexWorktreeEnabled"
+    ]) {
+      localStorage.removeItem(key);
+    }
+    state.runtimeMigrationCandidate = null;
+  };
+
+  app.workspaceRuntimePreferencePayload = function workspaceRuntimePreferencePayload(runtime = state.runtimePreferences) {
+    const next = app.normalizeRuntimeChoice(runtime);
+    return {
+      backendId: next.backendId,
+      model: next.model,
+      reasoningEffort: next.reasoningEffort,
+      permissionMode: next.permissionMode || "full",
+      worktreeMode: next.worktreeMode === "always" ? "always" : "off",
+      mcpProfileId: next.mcpProfileId
+    };
+  };
+
+  app.applyWorkspaceRuntimePreferenceRecord = function applyWorkspaceRuntimePreferenceRecord(record, scopeKey) {
+    if (!record || state.runtimePreferenceScopeKey !== scopeKey) return;
+    state.runtimePreferenceVersion = Number(record.version || 0) || 0;
+    state.runtimePreferences = app.workspaceRuntimePreferencePayload(record);
+    app.applyRuntimeDraft(state.runtimePreferences, { persist: false, remote: false, dirty: false });
+    app.writeStoredRuntimePreferences(state.runtimePreferences);
+  };
+
+  app.loadWorkspaceRuntimePreference = async function loadWorkspaceRuntimePreference(options = {}) {
+    const scope = app.workspaceRuntimePreferenceScope();
+    if (!scope) return null;
+    if (!options.force && state.runtimePreferenceScopeKey === scope.key && state.runtimePreferenceLoadPromise) {
+      return state.runtimePreferenceLoadPromise;
+    }
+    state.runtimePreferenceScopeKey = scope.key;
+    state.runtimePreferenceVersion = 0;
+    state.runtimePreferenceLoading = true;
+    state.runtimePreferenceError = "";
+    const query = new URLSearchParams({ targetAgentId: scope.targetAgentId, workspaceId: scope.workspaceId });
+    const load = (async () => {
+      try {
+        let data = await app.apiGet(`/api/codex/runtime-preference?${query.toString()}`);
+        if (state.runtimePreferenceScopeKey !== scope.key) return null;
+        if (!data.preference) {
+          const migrationCandidate = state.runtimeMigrationCandidate;
+          const hasLegacyCandidate = migrationCandidate && Object.values(migrationCandidate).some((value) => Boolean(value) && value !== "off");
+          const createBody = {
+            targetAgentId: scope.targetAgentId,
+            workspaceId: scope.workspaceId,
+            version: 0,
+            ...(hasLegacyCandidate
+              ? { migration: true, migrationCandidate: app.workspaceRuntimePreferencePayload(migrationCandidate) }
+              : { preference: app.workspaceRuntimePreferencePayload({}) })
+          };
+          try {
+            data = await app.apiPost("/api/codex/runtime-preference", createBody);
+          } catch (error) {
+            if (!hasLegacyCandidate || !String(error.code || "").startsWith("runtime.")) throw error;
+            data = await app.apiPost("/api/codex/runtime-preference", {
+              targetAgentId: scope.targetAgentId,
+              workspaceId: scope.workspaceId,
+              version: 0,
+              preference: app.workspaceRuntimePreferencePayload({})
+            });
+          }
+        }
+        if (state.runtimePreferenceScopeKey !== scope.key) return data.preference || null;
+        app.applyWorkspaceRuntimePreferenceRecord(data.preference, scope.key);
+        app.clearLegacyRuntimePreferences();
+        const retryPreference = state.runtimePreferenceRetries?.get?.(scope.key);
+        if (retryPreference) {
+          state.runtimePreferenceRetries.delete(scope.key);
+          app.queueWorkspaceRuntimePreferenceSave(retryPreference);
+        }
+        return data.preference || null;
+      } catch (error) {
+        if (state.runtimePreferenceScopeKey === scope.key) {
+          state.runtimePreferenceError = error.message || "Runtime preference load failed.";
+          const cached = app.readWorkspaceRuntimePreferenceCache(scope.key);
+          if (cached) app.applyWorkspaceRuntimePreferenceRecord(cached, scope.key);
+        }
+        throw error;
+      } finally {
+        if (state.runtimePreferenceScopeKey === scope.key) {
+          state.runtimePreferenceLoading = false;
+          state.runtimePreferenceLoadPromise = null;
+        }
+      }
+    })();
+    state.runtimePreferenceLoadPromise = load;
+    return load;
+  };
+
+  app.queueWorkspaceRuntimePreferenceSave = function queueWorkspaceRuntimePreferenceSave(runtime = state.runtimePreferences) {
+    const scope = app.workspaceRuntimePreferenceScope();
+    if (!scope || state.runtimePreferenceScopeKey !== scope.key) return null;
+    state.runtimePreferencePendingSave = { scope, preference: app.workspaceRuntimePreferencePayload(runtime) };
+    if (state.runtimePreferenceLoading) {
+      return state.runtimePreferenceLoadPromise?.then(() => app.queueWorkspaceRuntimePreferenceSave(state.runtimePreferencePendingSave?.preference || runtime));
+    }
+    if (state.runtimePreferenceSavePromise) return state.runtimePreferenceSavePromise;
+    const save = (async () => {
+      state.runtimePreferenceSaving = true;
+      while (state.runtimePreferencePendingSave) {
+        const pending = state.runtimePreferencePendingSave;
+        state.runtimePreferencePendingSave = null;
+        let version = pending.scope.key === state.runtimePreferenceScopeKey ? state.runtimePreferenceVersion : 0;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            const data = await app.apiPost("/api/codex/runtime-preference", {
+              targetAgentId: pending.scope.targetAgentId,
+              workspaceId: pending.scope.workspaceId,
+              version,
+              preference: pending.preference
+            });
+            if (pending.scope.key === state.runtimePreferenceScopeKey) {
+              state.runtimePreferenceError = "";
+              state.runtimePreferenceRetries?.delete?.(pending.scope.key);
+              app.applyWorkspaceRuntimePreferenceRecord(data.preference, pending.scope.key);
+            }
+            break;
+          } catch (error) {
+            const latest = error.data?.preference;
+            if (error.status === 409 && latest && attempt === 0) {
+              version = Number(latest.version || 0) || 0;
+              if (pending.scope.key === state.runtimePreferenceScopeKey) state.runtimePreferenceVersion = version;
+              continue;
+            }
+            const errorMessage = error.message || "Runtime preference save failed.";
+            if (pending.scope.key === state.runtimePreferenceScopeKey) {
+              state.runtimePreferenceError = errorMessage;
+              state.runtimePreferencePendingSave = pending;
+              app.toast?.(`运行设置保存失败：${errorMessage}`);
+            } else {
+              state.runtimePreferenceRetries?.set?.(pending.scope.key, pending.preference);
+            }
+            throw error;
+          }
+        }
+      }
+    })().finally(() => {
+      state.runtimePreferenceSaving = false;
+      state.runtimePreferenceSavePromise = null;
+    });
+    state.runtimePreferenceSavePromise = save;
+    save.catch(() => {});
+    return save;
+  };
+
+  app.ensureWorkspaceRuntimePreferenceReady = async function ensureWorkspaceRuntimePreferenceReady() {
+    if (state.runtimePreferenceLoadPromise) await state.runtimePreferenceLoadPromise;
+    if (!state.runtimePreferenceScopeKey) await app.loadWorkspaceRuntimePreference();
+    else if (state.runtimePreferenceError) await app.loadWorkspaceRuntimePreference({ force: true });
+    if (state.runtimePreferencePendingSave && !state.runtimePreferenceSavePromise) {
+      app.queueWorkspaceRuntimePreferenceSave(state.runtimePreferencePendingSave.preference);
+    }
+    if (state.runtimePreferenceSavePromise) await state.runtimePreferenceSavePromise;
+    if (state.runtimePreferenceError) throw new Error(state.runtimePreferenceError);
   };
 
   app.requestedWorktreeMode = function requestedWorktreeMode() {
@@ -1177,8 +1726,10 @@ export function installCore(app) {
     const toggle = elements.worktreeModeToggle;
     if (!toggle) return;
     const agentMode = app.normalizeWorktreeModeValue(state.codexAgentRuntime.worktreeMode);
-    const forced = agentMode === "always";
-    const available = forced || agentMode === "optional";
+    const workspacePolicy = state.codexAgentRuntime?.capabilities?.worktreeByWorkspace?.[app.currentProjectId?.() || ""];
+    const workspaceAvailability = String(workspacePolicy?.availability || "").trim().toLowerCase();
+    const forced = agentMode === "always" && workspaceAvailability !== "disabled" && workspaceAvailability !== "unavailable";
+    const available = (forced || agentMode === "optional") && workspaceAvailability !== "disabled" && workspaceAvailability !== "unavailable";
     const checked = forced || (available && state.worktreePreferenceEnabled);
     toggle.checked = checked;
     toggle.disabled = !available || forced;
@@ -1187,13 +1738,16 @@ export function installCore(app) {
       elements.worktreeModeSubtitle.textContent = forced
         ? "桌面端强制开启"
         : available
-          ? "新会话默认独立执行"
+          ? checked
+            ? "修改任务建议隔离；只读任务可关闭"
+            : "只读任务用主工作区；修改任务建议开启"
           : "桌面端未启用";
     }
   };
 
   app.workspaceLabel = function workspaceLabel(workspace) {
-    return workspace?.label || workspace?.id || workspace?.path || "未命名项目";
+    const label = workspace?.label || workspace?.workspaceId || workspace?.id || workspace?.path || "未命名项目";
+    return workspace?.agentLabel ? `${label} · ${workspace.agentLabel}` : label;
   };
 
   app.workspaceMeta = function workspaceMeta(workspace) {
@@ -1201,6 +1755,7 @@ export function installCore(app) {
   };
 
   app.workspaceSecondaryLabel = function workspaceSecondaryLabel(workspace) {
+    if (workspace?.agentLabel) return workspace.agentLabel;
     if (!workspace?.id) return "";
     return workspace.label && workspace.label !== workspace.id ? workspace.id : "";
   };
@@ -1224,30 +1779,21 @@ export function installCore(app) {
 
   app.refreshProjectSwitcherVisibility = function refreshProjectSwitcherVisibility() {
     if (!elements.projectSwitcher) return;
-    elements.projectSwitcher.hidden = !app.isLoggedIn() || !state.token;
-  };
-
-  app.setTopbarContextTitle = function setTopbarContextTitle(label = "") {
-    const fallback = app.currentProjectId?.() ? "等待桌面" : "Echo";
-    const text = String(label || "").trim() || fallback;
-    state.topbarContextTitle = text;
-    if (elements.topbarContextTitle) {
-      elements.topbarContextTitle.textContent = text;
-      elements.topbarContextTitle.title = text;
-    }
+    elements.projectSwitcher.hidden = !app.canUseWorkbench?.();
   };
 
   app.refreshTopbarProjectChip = function refreshTopbarProjectChip() {
     app.refreshProjectSwitcherVisibility();
-    const workspace =
-      state.codexWorkspaces.find((item) => item.id === elements.codexProject?.value) ||
-      state.codexWorkspaces.find((item) => item.id === app.currentProjectId?.()) ||
+    const workspace = app.currentWorkspace?.();
+    const agent =
+      app.agentById?.(state.selectedAgentId) ||
+      app.agentById?.(workspace?.agentId) ||
       null;
-    const title = workspace
-      ? app.workspaceDirectoryName?.(workspace) ||
-        app.workspaceLabel?.(workspace) ||
-        ""
-      : "";
+    const title =
+      app.agentDisplayName?.(agent) ||
+      workspace?.agentLabel ||
+      (workspace ? app.workspaceDirectoryName?.(workspace) : "") ||
+      "";
     app.setTopbarContextTitle(title);
   };
 
@@ -1271,26 +1817,52 @@ export function installCore(app) {
     return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
   };
 
-  app.sessionProjectLabel = function sessionProjectLabel(projectId) {
+  app.sessionProjectLabel = function sessionProjectLabel(projectId, targetAgentId = "") {
     const normalizedProjectId = String(projectId || "").trim();
     if (!normalizedProjectId) return "未选择工程";
+    const normalizedTargetAgentId = String(targetAgentId || "").trim();
+    const workspace = state.codexWorkspaces.find(
+      (item) =>
+        (item.id === normalizedProjectId || item.workspaceId === normalizedProjectId) &&
+        (!normalizedTargetAgentId || item.agentId === normalizedTargetAgentId)
+    );
     return app.workspaceLabel(
-      state.codexWorkspaces.find((workspace) => workspace.id === normalizedProjectId) || { id: normalizedProjectId }
+      workspace ||
+        state.codexWorkspaces.find((item) => item.id === normalizedProjectId || item.workspaceId === normalizedProjectId) ||
+        { id: normalizedProjectId }
+    );
+  };
+
+  app.currentWorkspace = function currentWorkspace() {
+    const key = String(elements.codexProject?.value || app.storedCodexProjectKey?.() || "").trim();
+    return (
+      app.workspaceForSelectionKey?.(key) ||
+      (Array.isArray(state.codexWorkspaces) ? state.codexWorkspaces : []).find((workspace) => {
+        const workspaceId = String(workspace?.id || workspace?.workspaceId || "").trim();
+        const agentId = String(workspace?.agentId || "").trim();
+        return key === workspaceId || (agentId && key === `${agentId}:${workspaceId}`);
+      }) ||
+      null
     );
   };
 
   app.currentProjectId = function currentProjectId() {
-    return String(
-      elements.codexProject?.value ||
-        state.selectedCodexSession?.projectId ||
-        localStorage.getItem("echoCodexProject") ||
-        ""
-    ).trim();
+    return String(app.currentWorkspace()?.id || state.selectedCodexSession?.projectId || "").trim();
+  };
+
+  app.currentTargetAgentId = function currentTargetAgentId() {
+    return String(app.currentWorkspace()?.agentId || state.selectedAgentId || state.selectedCodexSession?.targetAgentId || "").trim();
   };
 
   app.sessionBelongsToCurrentProject = function sessionBelongsToCurrentProject(session) {
     const projectId = app.currentProjectId();
-    return Boolean(session?.id && projectId && session.projectId === projectId);
+    const targetAgentId = app.currentTargetAgentId();
+    return Boolean(
+      session?.id &&
+        projectId &&
+        session.projectId === projectId &&
+        (!targetAgentId || !session.targetAgentId || session.targetAgentId === targetAgentId)
+    );
   };
 
   app.sessionRuntimeLabel = function sessionRuntimeLabel(runtime = {}) {
@@ -1300,6 +1872,7 @@ export function installCore(app) {
     if (normalized.permissionMode) parts.push(app.permissionModeDisplayName(normalized.permissionMode, app.runtimeWithBackendDefaults(normalized)));
     if (normalized.model) parts.push(app.modelDisplayName(normalized.model));
     if (normalized.reasoningEffort) parts.push(`推理 ${app.reasoningDisplayName(normalized.reasoningEffort)}`);
+    if (normalized.mcpProfileId) parts.push(`MCP ${app.mcpProfileDisplayName?.(normalized.mcpProfileId) || normalized.mcpProfileId}`);
     if (normalized.worktreeMode === "always") parts.push("隔离 worktree");
     return parts.join(" · ");
   };
@@ -1549,7 +2122,11 @@ export function installCore(app) {
     const preferredBackendId =
       requested.backendId || base.backendId || state.runtimePreferences.backendId || state.codexAgentRuntime.backendId || "";
     const matchedBackend = app.backendRuntimeForModel(requested.model, preferredBackendId);
-    const selected = matchedBackend || app.backendRuntimeById(preferredBackendId) || state.codexAgentRuntime || state.codexBackendRuntimes[0] || {};
+    const currentAgentRuntime =
+      app.backendRuntimeById(state.codexAgentRuntime.backendId || state.codexAgentRuntime.provider || state.codexAgentRuntime.backendName) ||
+      (state.codexBackendRuntimes.length > 0 ? null : state.codexAgentRuntime);
+    const preferredBackend = app.backendRuntimeById(preferredBackendId);
+    const selected = preferredBackend || (!preferredBackendId ? matchedBackend : null) || currentAgentRuntime || state.codexBackendRuntimes[0] || {};
     return {
       ...requested,
       backendId: String(selected.backendId || preferredBackendId || requested.backendId || "").trim(),
@@ -1586,6 +2163,8 @@ export function installCore(app) {
     state.codexAllowedPermissionModes = Array.isArray(selected.allowedPermissionModes)
       ? selected.allowedPermissionModes.map((mode) => app.normalizePermissionMode(mode)).filter(Boolean)
       : [];
+    state.codexSupportedPermissionModes = app.supportedPermissionModesForBackend(selected);
+    app.refreshPermissionModeAvailability();
     app.refreshModelCatalog();
   };
 
@@ -1655,14 +2234,24 @@ export function installCore(app) {
       approvalRequests: "supportsApprovalRequests",
       interactionRequests: "supportsInteractionRequests",
       worktree: "supportsWorktree",
-      gitSummary: "supportsGitSummary"
+      gitSummary: "supportsGitSummary",
+      threadArchive: "supportsThreadArchive"
     }[key];
     if (legacyKey && typeof source[legacyKey] === "boolean") return source[legacyKey];
 
     if (key === "text" || key === "cancellation") return true;
     if (
       app.isCodexRuntime(source) &&
-      ["attachments", "compaction", "contextUsage", "approvalRequests", "interactionRequests", "gitSummary", "worktree"].includes(key)
+      [
+        "attachments",
+        "compaction",
+        "contextUsage",
+        "approvalRequests",
+        "interactionRequests",
+        "gitSummary",
+        "worktree",
+        "threadArchive"
+      ].includes(key)
     ) {
       return true;
     }
@@ -1679,6 +2268,8 @@ export function installCore(app) {
 
   app.currentBackendRunsPlanOnly = function currentBackendRunsPlanOnly(runtime = app.currentBackendRuntime()) {
     const resolved = app.runtimeWithBackendDefaults(runtime);
+    if (!app.isClaudeRuntime(resolved)) return false;
+
     const explicitMode = app.normalizePermissionMode(resolved.permissionMode || resolved.profile || app.permissionModeFromRuntime(resolved));
     if (explicitMode === "strict") return true;
     if (explicitMode === "approve" || explicitMode === "full") return false;
@@ -1703,7 +2294,7 @@ export function installCore(app) {
   app.runtimeForAttachments = function runtimeForAttachments(runtime = {}, attachments = []) {
     if (!Array.isArray(attachments) || attachments.length === 0) return runtime;
     if (!app.runtimeSupports(app.runtimeWithBackendDefaults(runtime), "attachments")) {
-      throw new Error("当前后端暂不支持截图附件。");
+      throw new Error("当前后端暂不支持文件附件。");
     }
     return runtime;
   };
@@ -1747,8 +2338,17 @@ export function installCore(app) {
     return false;
   };
 
+  app.requiresPairing = function requiresPairing() {
+    return state.authEnabled === false;
+  };
+
+  app.canUseWorkbench = function canUseWorkbench() {
+    return app.isLoggedIn() && (!app.requiresPairing() || Boolean(state.token));
+  };
+
   app.ensurePaired = function ensurePaired() {
     if (!app.ensureLoggedIn()) return false;
+    if (!app.requiresPairing()) return true;
     if (state.token) return true;
     app.updateAuthView("请先扫码配对。");
     app.showPairingPanel({ focus: true });
@@ -1794,6 +2394,7 @@ export function installCore(app) {
       const error = new Error(data.error || `HTTP ${response.status}`);
       error.status = response.status;
       error.code = data.code || "";
+      error.data = data;
       throw error;
     }
     return data;
@@ -1808,6 +2409,101 @@ export function installCore(app) {
     node.textContent = message;
     document.body.append(node);
     window.setTimeout(() => node.remove(), 2600);
+  };
+
+  app.confirm = function confirm(options = {}) {
+    const title = String(options.title || "确认操作");
+    const body = String(options.body || "");
+    const confirmLabel = String(options.confirmLabel || "确认");
+    const cancelLabel = String(options.cancelLabel || "取消");
+    const tone = options.tone === "danger" ? "danger" : "";
+    const previousFocus = document.activeElement;
+    const existing = document.querySelector(".echo-confirm");
+    if (typeof state.confirmDismiss === "function") state.confirmDismiss(false);
+    if (existing) existing.remove();
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const overlay = document.createElement("div");
+      overlay.className = `echo-confirm${tone ? ` ${tone}` : ""}`;
+      overlay.setAttribute("role", "presentation");
+      overlay.innerHTML = `
+        <section class="echo-confirm-panel" role="dialog" aria-modal="true" aria-labelledby="echoConfirmTitle" aria-describedby="echoConfirmBody">
+          <div class="echo-confirm-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path
+                d="M12 4.2 20.2 19a1 1 0 0 1-.9 1.5H4.7a1 1 0 0 1-.9-1.5L12 4.2Z"
+                fill="none"
+                stroke="currentColor"
+                stroke-linejoin="round"
+                stroke-width="1.8"
+              />
+              <path d="M12 9v5M12 17.2h.01" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.9" />
+            </svg>
+          </div>
+          <div class="echo-confirm-copy">
+            <strong id="echoConfirmTitle">${app.escapeHtml(title)}</strong>
+            ${body ? `<p id="echoConfirmBody">${app.escapeHtml(body)}</p>` : `<p id="echoConfirmBody"></p>`}
+          </div>
+          <div class="echo-confirm-actions">
+            <button class="secondary echo-confirm-cancel" type="button">${app.escapeHtml(cancelLabel)}</button>
+            <button class="primary echo-confirm-accept" type="button">${app.escapeHtml(confirmLabel)}</button>
+          </div>
+        </section>
+      `;
+      const panel = overlay.querySelector(".echo-confirm-panel");
+      const cancelButton = overlay.querySelector(".echo-confirm-cancel");
+      const acceptButton = overlay.querySelector(".echo-confirm-accept");
+
+      function finish(value) {
+        if (settled) return;
+        settled = true;
+        overlay.removeEventListener("click", handleOverlayClick);
+        overlay.removeEventListener("keydown", handleKeydown);
+        overlay.remove();
+        if (state.confirmDismiss === finish) state.confirmDismiss = null;
+        document.body.classList.remove("confirm-open");
+        if (previousFocus?.focus) previousFocus.focus({ preventScroll: true });
+        resolve(value);
+      }
+
+      function handleOverlayClick(event) {
+        if (event.target === overlay) finish(false);
+      }
+
+      function handleKeydown(event) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          finish(false);
+          return;
+        }
+        if (event.key !== "Tab") return;
+        const focusable = [cancelButton, acceptButton].filter(Boolean);
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+
+      overlay.addEventListener("click", handleOverlayClick);
+      overlay.addEventListener("keydown", handleKeydown);
+      cancelButton?.addEventListener("click", () => finish(false));
+      acceptButton?.addEventListener("click", () => finish(true));
+      state.confirmDismiss = finish;
+      document.body.append(overlay);
+      document.body.classList.add("confirm-open");
+      panel?.animate?.([{ transform: "translateY(8px)", opacity: 0 }, { transform: "translateY(0)", opacity: 1 }], {
+        duration: 180,
+        easing: "cubic-bezier(0.16, 1, 0.3, 1)"
+      });
+      cancelButton?.focus({ preventScroll: true });
+    });
   };
 
   app.escapeHtml = function escapeHtml(value) {
@@ -1828,23 +2524,69 @@ function readStoredUser(localStorageRef) {
   }
 }
 
+function readStoredEchoToken(localStorageRef, user = null, options = {}) {
+  const scoped = localStorageRef.getItem(scopedStorageKey("echoToken", user));
+  if (scoped) return scoped;
+  return options.fallbackLegacy === false ? "" : localStorageRef.getItem("echoToken") || "";
+}
+
+function readStoredSelectedAgentId(localStorageRef, user = null, options = {}) {
+  const scoped = localStorageRef.getItem(scopedStorageKey("echoSelectedAgent", user));
+  if (scoped) return String(scoped || "").trim();
+  const fallbackLegacy = options.fallbackLegacy ?? !normalizeStorageUserKey(user);
+  return fallbackLegacy ? String(localStorageRef.getItem("echoSelectedAgent") || "").trim() : "";
+}
+
 function readStoredRuntimePreferences(localStorageRef) {
   return {
     backendId: localStorageRef.getItem("echoCodexBackendId") || "",
     permissionMode: localStorageRef.getItem("echoCodexPermissionMode") || "",
     model: localStorageRef.getItem("echoCodexModel") || "",
     reasoningEffort: localStorageRef.getItem("echoCodexReasoningEffort") || "",
+    mcpProfileId: normalizeStoredMcpProfileId(localStorageRef.getItem("echoCodexMcpProfile")),
     worktreeMode: readStoredWorktreePreference(localStorageRef) ? "always" : "off"
   };
 }
 
-function readStoredWorktreePreference(localStorageRef) {
-  return localStorageRef.getItem("echoCodexWorktreeEnabled") !== "false";
+function readStoredMcpTargetClients(localStorageRef) {
+  const allowed = new Set(["codex", "claude-code"]);
+  const raw = String(localStorageRef.getItem("echoMcpTargetClients") || "codex").split(",");
+  const targets = raw.map((item) => item.trim()).filter((item) => allowed.has(item));
+  return Array.from(new Set(targets.length ? targets : ["codex"]));
 }
 
-function readStoredCodexWorkspaces(localStorageRef) {
+function normalizeStoredMcpProfileId(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
+function readStoredWorktreePreference(localStorageRef) {
+  return localStorageRef.getItem("echoCodexWorktreeEnabled") === "true";
+}
+
+function readStoredComposerMode(localStorageRef, user = null) {
+  const scoped = normalizeStoredComposerModeValue(localStorageRef.getItem(scopedStorageKey("echoComposerMode", user)));
+  if (scoped) return scoped;
+  return normalizeStoredComposerModeValue(localStorageRef.getItem("echoComposerMode"));
+}
+
+function normalizeStoredComposerModeValue(value) {
+  const mode = String(value || "").trim().toLowerCase();
+  if (mode === "plan") return "plan";
+  if (mode === "execute") return "execute";
+  return "";
+}
+
+function readStoredCodexWorkspaces(localStorageRef, user = null, options = {}) {
   try {
-    const parsed = JSON.parse(localStorageRef.getItem("echoCodexWorkspaces") || "[]");
+    const scoped = localStorageRef.getItem(scopedStorageKey("echoCodexWorkspaces", user));
+    const fallbackLegacy = options.fallbackLegacy ?? !normalizeStorageUserKey(user);
+    const legacy = fallbackLegacy ? localStorageRef.getItem("echoCodexWorkspaces") : "";
+    const parsed = JSON.parse(scoped || legacy || "[]");
     if (!Array.isArray(parsed)) return [];
     return parsed.map(normalizeStoredCodexWorkspace).filter(Boolean).slice(0, 50);
   } catch {
@@ -1853,19 +2595,38 @@ function readStoredCodexWorkspaces(localStorageRef) {
 }
 
 function normalizeStoredCodexWorkspace(workspace = {}) {
-  const id = String(workspace.id || "").trim();
+  const id = String(workspace.workspaceId || workspace.projectId || workspace.id || "").trim();
   if (!id) return null;
+  const agentId = String(workspace.agentId || "").trim();
+  const key = String(workspace.key || (agentId ? `${agentId}:${id}` : id)).trim();
   return {
     id,
+    workspaceId: id,
+    key,
     label: String(workspace.label || workspace.id || "").trim() || id,
-    path: String(workspace.path || "").trim()
+    path: String(workspace.path || "").trim(),
+    agentId,
+    agentLabel: String(workspace.agentLabel || workspace.agentName || workspace.agentId || "").trim(),
+    agentOwnerUser: String(workspace.agentOwnerUser || "").trim()
   };
+}
+
+function scopedStorageKey(baseKey, user = null) {
+  const userKey = normalizeStorageUserKey(user);
+  return userKey ? `${baseKey}:${userKey}` : baseKey;
+}
+
+function normalizeStorageUserKey(user = null) {
+  const username = String(user?.username || user?.displayName || "").trim().toLowerCase();
+  if (!username) return "";
+  return username.replace(/[^a-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 120);
 }
 
 function queryElements(documentRef) {
   return {
     topbar: documentRef.querySelector(".topbar"),
     topbarContextTitle: documentRef.querySelector("#topbarContextTitle"),
+    topbarEnvironmentAvatar: documentRef.querySelector("#topbarEnvironmentAvatar"),
     themeColorMeta: documentRef.querySelector("#themeColorMeta"),
     appleStatusBarMeta: documentRef.querySelector("#appleStatusBarMeta"),
     statusText: documentRef.querySelector("#statusText"),
@@ -1898,28 +2659,67 @@ function queryElements(documentRef) {
     activeSessionMeta: documentRef.querySelector("#activeSessionMeta"),
     sessionStatusRail: documentRef.querySelector("#sessionStatusRail"),
     stopCodexTurnButton: documentRef.querySelector("#stopCodexTurnButton"),
-    turnActivityLine: documentRef.querySelector("#turnActivityLine"),
-    turnActivityText: documentRef.querySelector("#turnActivityText"),
     contextUsageDetailsLine: documentRef.querySelector("#contextUsageDetailsLine"),
     composerStatusText: documentRef.querySelector("#composerStatusText"),
     composerActionsMeta: documentRef.querySelector("#composerActionsMeta"),
     contextUsageIndicator: documentRef.querySelector("#contextUsageIndicator"),
-    compactContextButton: documentRef.querySelector("#compactContextButton"),
+    agentSkills: documentRef.querySelector("#agentSkills"),
+    agentSkillsButton: documentRef.querySelector("#agentSkillsButton"),
+    agentSkillsPanel: documentRef.querySelector("#agentSkillsPanel"),
+    agentSkillsList: documentRef.querySelector("#agentSkillsList"),
+    agentSkillsMeta: documentRef.querySelector("#agentSkillsMeta"),
+    agentSkillManager: documentRef.querySelector("#agentSkillManager"),
+    agentSkillButton: documentRef.querySelector("#agentSkillButton"),
+    agentSkillPanel: documentRef.querySelector("#agentSkillPanel"),
+    agentSkillCloseButton: documentRef.querySelector("#agentSkillCloseButton"),
+    agentSkillMeta: documentRef.querySelector("#agentSkillMeta"),
+    agentSkillPreferenceSubtitle: documentRef.querySelector("#agentSkillPreferenceSubtitle"),
+    agentSkillRefreshButton: documentRef.querySelector("#agentSkillRefreshButton"),
+    agentSkillImportButton: documentRef.querySelector("#agentSkillImportButton"),
+    agentSkillImportForm: documentRef.querySelector("#agentSkillImportForm"),
+    agentSkillImportUrl: documentRef.querySelector("#agentSkillImportUrl"),
+    agentSkillImportCancelButton: documentRef.querySelector("#agentSkillImportCancelButton"),
+    agentSkillImportSubmitButton: documentRef.querySelector("#agentSkillImportSubmitButton"),
+    agentSkillOverview: documentRef.querySelector("#agentSkillOverview"),
+    agentSkillList: documentRef.querySelector("#agentSkillList"),
+    agentSkillDetail: documentRef.querySelector("#agentSkillDetail"),
+    agentSkillTargetList: documentRef.querySelector("#agentSkillTargetList"),
+    agentSkillStatus: documentRef.querySelector("#agentSkillStatus"),
+    desktopPluginManager: documentRef.querySelector("#desktopPluginManager"),
+    desktopPluginButton: documentRef.querySelector("#desktopPluginButton"),
+    desktopPluginPanel: documentRef.querySelector("#desktopPluginPanel"),
+    desktopPluginCloseButton: documentRef.querySelector("#desktopPluginCloseButton"),
+    desktopPluginRefreshButton: documentRef.querySelector("#desktopPluginRefreshButton"),
+    desktopPluginMeta: documentRef.querySelector("#desktopPluginMeta"),
+    desktopPluginPreferenceSubtitle: documentRef.querySelector("#desktopPluginPreferenceSubtitle"),
+    desktopPluginOverview: documentRef.querySelector("#desktopPluginOverview"),
+    desktopPluginList: documentRef.querySelector("#desktopPluginList"),
+    desktopPluginStatus: documentRef.querySelector("#desktopPluginStatus"),
+    mcpManager: documentRef.querySelector("#mcpManager"),
+    mcpButton: documentRef.querySelector("#mcpButton"),
+    mcpPanel: documentRef.querySelector("#mcpPanel"),
+    mcpCloseButton: documentRef.querySelector("#mcpCloseButton"),
+    mcpMeta: documentRef.querySelector("#mcpMeta"),
+    mcpPreferenceSubtitle: documentRef.querySelector("#mcpPreferenceSubtitle"),
+    mcpRefreshButton: documentRef.querySelector("#mcpRefreshButton"),
+    mcpProfileList: documentRef.querySelector("#mcpProfileList"),
+    mcpDetailPanel: documentRef.querySelector("#mcpDetailPanel"),
+    mcpTargetList: documentRef.querySelector("#mcpTargetList"),
+    mcpApplyButton: documentRef.querySelector("#mcpApplyButton"),
+    mcpStatus: documentRef.querySelector("#mcpStatus"),
     composerPlanModeButton: documentRef.querySelector("#composerPlanModeButton"),
     quickSkills: documentRef.querySelector("#quickSkills"),
     quickSkillsButton: documentRef.querySelector("#quickSkillsButton"),
     quickSkillsPanel: documentRef.querySelector("#quickSkillsPanel"),
     quickSkillsList: documentRef.querySelector("#quickSkillsList"),
     quickSkillsMeta: documentRef.querySelector("#quickSkillsMeta"),
-    quickSkillNewButton: documentRef.querySelector("#quickSkillNewButton"),
+    quickSkillNewGlobalButton: documentRef.querySelector("#quickSkillNewGlobalButton"),
+    quickSkillNewProjectButton: documentRef.querySelector("#quickSkillNewProjectButton"),
     quickSkillForm: documentRef.querySelector("#quickSkillForm"),
     quickSkillFormTitle: documentRef.querySelector("#quickSkillFormTitle"),
     quickSkillId: documentRef.querySelector("#quickSkillId"),
     quickSkillTitle: documentRef.querySelector("#quickSkillTitle"),
     quickSkillScope: documentRef.querySelector("#quickSkillScope"),
-    quickSkillMode: documentRef.querySelector("#quickSkillMode"),
-    quickSkillRequiresSession: documentRef.querySelector("#quickSkillRequiresSession"),
-    quickSkillDescription: documentRef.querySelector("#quickSkillDescription"),
     quickSkillPrompt: documentRef.querySelector("#quickSkillPrompt"),
     quickSkillDeleteButton: documentRef.querySelector("#quickSkillDeleteButton"),
     quickSkillCancelButton: documentRef.querySelector("#quickSkillCancelButton"),
@@ -1930,11 +2730,22 @@ function queryElements(documentRef) {
     openSpecTitle: documentRef.querySelector("#openSpecTitle"),
     openSpecMeta: documentRef.querySelector("#openSpecMeta"),
     openSpecExploreButton: documentRef.querySelector("#openSpecExploreButton"),
+    openSpecOrchestrationButton: documentRef.querySelector("#openSpecOrchestrationButton"),
     openSpecRefreshButton: documentRef.querySelector("#openSpecRefreshButton"),
     openSpecCloseButton: documentRef.querySelector("#openSpecCloseButton"),
+    openSpecBackButton: documentRef.querySelector("#openSpecBackButton"),
     openSpecStatus: documentRef.querySelector("#openSpecStatus"),
     openSpecOverview: documentRef.querySelector("#openSpecOverview"),
     openSpecTimeline: documentRef.querySelector("#openSpecTimeline"),
+    openSpecOrchestrationActions: documentRef.querySelector("#openSpecOrchestrationActions"),
+    openSpecRunProgress: documentRef.querySelector("#openSpecRunProgress"),
+    openSpecRunPage: documentRef.querySelector("#openSpecRunPage"),
+    openSpecRunBackButton: documentRef.querySelector("#openSpecRunBackButton"),
+    openSpecRunCloseButton: documentRef.querySelector("#openSpecRunCloseButton"),
+    openSpecRunMeta: documentRef.querySelector("#openSpecRunMeta"),
+    openSpecRunStatus: documentRef.querySelector("#openSpecRunStatus"),
+    openSpecRunTimeline: documentRef.querySelector("#openSpecRunTimeline"),
+    openSpecRunActions: documentRef.querySelector("#openSpecRunActions"),
     fileBrowser: documentRef.querySelector("#fileBrowser"),
     fileBrowserButton: documentRef.querySelector("#fileBrowserButton"),
     fileBrowserPanel: documentRef.querySelector("#fileBrowserPanel"),
@@ -1957,19 +2768,46 @@ function queryElements(documentRef) {
     codexScrollSurface: documentRef.querySelector("#codexJobDetail"),
     showActiveSessionsButton: documentRef.querySelector("#showActiveSessionsButton"),
     showArchivedSessionsButton: documentRef.querySelector("#showArchivedSessionsButton"),
-    sidebarUserToggle: documentRef.querySelector("#sidebarUserToggle"),
-    sidebarUserBody: documentRef.querySelector("#sidebarUserBody"),
+    sidebarPreferences: documentRef.querySelector(".sidebar-panel-appearance"),
+    sidebarPreferencesToggle: documentRef.querySelector("#sidebarPreferencesToggle"),
+    sidebarPreferencesBody: documentRef.querySelector("#sidebarPreferencesBody"),
+    mobileSettingsButton: documentRef.querySelector("#mobileSettingsButton"),
+    mobileSettingsPanel: documentRef.querySelector("#mobileSettingsPanel"),
+    mobileSettingsCloseButton: documentRef.querySelector("#mobileSettingsCloseButton"),
+    mobileSettingsMeta: documentRef.querySelector("#mobileSettingsMeta"),
+    accountManager: documentRef.querySelector("#accountManager"),
+    accountButton: documentRef.querySelector("#accountButton"),
+    accountPanel: documentRef.querySelector("#accountPanel"),
+    accountCloseButton: documentRef.querySelector("#accountCloseButton"),
+    accountPreferenceSubtitle: documentRef.querySelector("#accountPreferenceSubtitle"),
+    adminManager: documentRef.querySelector("#adminManager"),
+    adminButton: documentRef.querySelector("#adminButton"),
+    adminPanel: documentRef.querySelector("#adminPanel"),
+    adminCloseButton: documentRef.querySelector("#adminCloseButton"),
+    adminRefreshButton: documentRef.querySelector("#adminRefreshButton"),
+    adminMeta: documentRef.querySelector("#adminMeta"),
+    adminPreferenceSubtitle: documentRef.querySelector("#adminPreferenceSubtitle"),
+    adminStatus: documentRef.querySelector("#adminStatus"),
+    adminAgentList: documentRef.querySelector("#adminAgentList"),
+    adminUserList: documentRef.querySelector("#adminUserList"),
+    adminUserDetail: documentRef.querySelector("#adminUserDetail"),
+    adminApproveButton: documentRef.querySelector("#adminApproveButton"),
     projectSwitcher: documentRef.querySelector("#projectSwitcher"),
+    agentEnvironmentList: documentRef.querySelector("#agentEnvironmentList"),
     sidebarUserMeta: documentRef.querySelector("#sidebarUserMeta"),
     codexProject: documentRef.querySelector("#codexProject"),
     codexBackend: documentRef.querySelector("#codexBackend"),
     codexPermissionMode: documentRef.querySelector("#codexPermissionMode"),
     codexModel: documentRef.querySelector("#codexModel"),
     codexReasoningEffort: documentRef.querySelector("#codexReasoningEffort"),
+    codexMcpProfile: documentRef.querySelector("#codexMcpProfile"),
     composerAttachmentButton: documentRef.querySelector("#composerAttachmentButton"),
+    composerFileAttachmentButton: documentRef.querySelector("#composerFileAttachmentButton"),
     composerAttachmentInput: documentRef.querySelector("#composerAttachmentInput"),
+    composerFileAttachmentInput: documentRef.querySelector("#composerFileAttachmentInput"),
     composerAttachmentTray: documentRef.querySelector("#composerAttachmentTray"),
     newProjectButton: documentRef.querySelector("#newProjectButton"),
+    openExistingProjectButton: documentRef.querySelector("#openExistingProjectButton"),
     projectCreateForm: documentRef.querySelector("#projectCreateForm"),
     projectCreateName: documentRef.querySelector("#projectCreateName"),
     projectCreateSubmit: documentRef.querySelector("#projectCreateSubmit"),
@@ -1977,6 +2815,15 @@ function queryElements(documentRef) {
     projectPickerMeta: documentRef.querySelector("#projectPickerMeta"),
     projectSheetStatus: documentRef.querySelector("#projectSheetStatus"),
     projectSheetList: documentRef.querySelector("#projectSheetList"),
+    projectImportPanel: documentRef.querySelector("#projectImportPanel"),
+    projectImportCloseButton: documentRef.querySelector("#projectImportCloseButton"),
+    projectImportRefreshButton: documentRef.querySelector("#projectImportRefreshButton"),
+    projectImportMeta: documentRef.querySelector("#projectImportMeta"),
+    projectImportRoots: documentRef.querySelector("#projectImportRoots"),
+    projectImportBreadcrumbs: documentRef.querySelector("#projectImportBreadcrumbs"),
+    projectImportList: documentRef.querySelector("#projectImportList"),
+    projectImportStatus: documentRef.querySelector("#projectImportStatus"),
+    projectImportSelectButton: documentRef.querySelector("#projectImportSelectButton"),
     codexPrompt: documentRef.querySelector("#codexPrompt"),
     composer: documentRef.querySelector(".composer"),
     newCodexSessionButton: documentRef.querySelector("#newCodexSessionButton"),

@@ -15,15 +15,18 @@ export class ClaudeCodeInteractiveRuntime {
     this.backendConfig = options.backendConfig || config.claude;
     this.sessions = new Map();
     this.activeTurns = new Map();
+    this.pendingStopsByThread = new Map();
+    this.pendingStopsBySession = new Map();
   }
 
   stop() {
     for (const turn of this.activeTurns.values()) {
-      turn.interrupted = true;
-      turn.child.kill("SIGTERM");
+      interruptClaudeTurn(turn);
     }
     this.activeTurns.clear();
     this.sessions.clear();
+    this.pendingStopsByThread.clear();
+    this.pendingStopsBySession.clear();
   }
 
   async handleCommand(command) {
@@ -189,25 +192,16 @@ export class ClaudeCodeInteractiveRuntime {
   async #stopTurn(command) {
     const appThreadId = String(command.appThreadId || this.sessions.get(command.sessionId)?.appThreadId || "").trim();
     const activeTurn = appThreadId ? this.activeTurns.get(appThreadId) : null;
-    if (!activeTurn) return { ok: true, sessionStatus: "active" };
+    if (!activeTurn) {
+      this.#rememberPendingStop(command.sessionId, appThreadId, {
+        expectedTurnId: command.activeTurnId,
+        reason: command.payload?.reason
+      });
+      return { ok: true, appThreadId: appThreadId || undefined, sessionStatus: "active" };
+    }
 
-    activeTurn.interrupted = true;
-    activeTurn.child.kill("SIGTERM");
-    await this.#emit(command.sessionId, [
-      {
-        type: "turn.interrupted",
-        text: "Claude Code turn interrupted from mobile.",
-        appThreadId,
-        activeTurnId: activeTurn.turnId,
-        clearActiveTurnId: true,
-        sessionStatus: "active",
-        raw: {
-          method: "turn/interrupt",
-          threadId: appThreadId,
-          turnId: activeTurn.turnId
-        }
-      }
-    ]);
+    interruptClaudeTurn(activeTurn);
+    await this.#emitInterruptedTurn(command.sessionId, appThreadId, activeTurn.turnId);
     return { ok: true, appThreadId, sessionStatus: "active" };
   }
 
@@ -231,7 +225,7 @@ export class ClaudeCodeInteractiveRuntime {
 
   async #runTurn({ sessionId, appThreadId, text, attachments, workspace, runtime, mode, resume }) {
     if (attachments.length > 0) {
-      throw new Error("Claude Code backend does not support Echo screenshot attachments yet.");
+      throw new Error("Claude Code backend does not support Echo file attachments yet.");
     }
     if (this.activeTurns.has(appThreadId)) {
       throw new Error("Claude Code is already handling a turn for this session.");
@@ -241,6 +235,11 @@ export class ClaudeCodeInteractiveRuntime {
     }
 
     const turnId = randomUUID();
+    if (this.#consumePendingStop(sessionId, appThreadId, turnId)) {
+      await this.#emitInterruptedTurn(sessionId, appThreadId, turnId, "Claude Code turn interrupted before it started.");
+      return { ok: true, appThreadId, sessionStatus: "active" };
+    }
+
     const gitBaseline = await gitWorkspaceSnapshot(workspace.path).catch(() => null);
     await this.#emit(sessionId, [
       {
@@ -265,16 +264,21 @@ export class ClaudeCodeInteractiveRuntime {
     const turnBackendConfig = buildTurnBackendConfig(this.backendConfig, runtime);
     const child = spawn(runtime.command, buildClaudeArgs({ appThreadId, text, runtime, mode, resume }), {
       cwd: workspace.path,
-      env: prepareClaudeRunEnvironment(turnBackendConfig, { configScopeId: appThreadId }),
+      env: { ...prepareClaudeRunEnvironment(turnBackendConfig, { configScopeId: appThreadId }), ...(runtime.worktreeCacheEnv || {}) },
       stdio: ["ignore", "pipe", "pipe"]
     });
 
     const state = {
       child,
       interrupted: false,
-      turnId
+      turnId,
+      killTimer: null
     };
     this.activeTurns.set(appThreadId, state);
+    if (this.#consumePendingStop(sessionId, appThreadId, turnId)) {
+      interruptClaudeTurn(state);
+      await this.#emitInterruptedTurn(sessionId, appThreadId, turnId);
+    }
 
     try {
       const result = await this.#consumeTurnOutput({
@@ -291,6 +295,7 @@ export class ClaudeCodeInteractiveRuntime {
       }
       return { ok: true, appThreadId, sessionStatus: "active" };
     } finally {
+      if (state.killTimer) clearTimeout(state.killTimer);
       this.activeTurns.delete(appThreadId);
     }
   }
@@ -472,6 +477,8 @@ export class ClaudeCodeInteractiveRuntime {
 
   #rememberSession(sessionId, appThreadId, workspace, runtime) {
     this.sessions.set(sessionId, { appThreadId, workspace, runtime });
+    const pending = this.pendingStopsBySession.get(sessionId);
+    if (pending) this.pendingStopsByThread.set(appThreadId, pending);
   }
 
   #workspaceFor(command = {}) {
@@ -516,6 +523,60 @@ export class ClaudeCodeInteractiveRuntime {
     if (!events.length) return;
     await this.onEvents(sessionId, events);
   }
+
+  async #emitInterruptedTurn(sessionId, appThreadId, turnId, text = "Claude Code turn interrupted from mobile.") {
+    await this.#emit(sessionId, [
+      {
+        type: "turn.interrupted",
+        text,
+        appThreadId,
+        activeTurnId: turnId,
+        clearActiveTurnId: true,
+        sessionStatus: "active",
+        raw: {
+          method: "turn/interrupt",
+          threadId: appThreadId,
+          turnId
+        }
+      }
+    ]);
+  }
+
+  #rememberPendingStop(sessionId, appThreadId, options = {}) {
+    const stop = {
+      expectedTurnId: String(options.expectedTurnId || "").trim(),
+      reason: String(options.reason || "").trim(),
+      createdAt: Date.now()
+    };
+    if (sessionId) this.pendingStopsBySession.set(sessionId, stop);
+    if (appThreadId) this.pendingStopsByThread.set(appThreadId, stop);
+  }
+
+  #consumePendingStop(sessionId, appThreadId, turnId) {
+    const now = Date.now();
+    const candidates = [
+      appThreadId ? ["thread", appThreadId, this.pendingStopsByThread.get(appThreadId)] : null,
+      sessionId ? ["session", sessionId, this.pendingStopsBySession.get(sessionId)] : null
+    ].filter(Boolean);
+
+    for (const [, , pending] of candidates) {
+      if (!pending) continue;
+      const stale = now - Number(pending.createdAt || 0) > 120000;
+      const turnMismatch = pending.expectedTurnId && pending.expectedTurnId !== turnId;
+      if (stale || turnMismatch) {
+        this.#forgetPendingStop(sessionId, appThreadId);
+        continue;
+      }
+      this.#forgetPendingStop(sessionId, appThreadId);
+      return pending;
+    }
+    return null;
+  }
+
+  #forgetPendingStop(sessionId, appThreadId) {
+    if (sessionId) this.pendingStopsBySession.delete(sessionId);
+    if (appThreadId) this.pendingStopsByThread.delete(appThreadId);
+  }
 }
 
 function buildClaudeArgs({ appThreadId, text, runtime, mode, resume }) {
@@ -529,6 +590,18 @@ function buildClaudeArgs({ appThreadId, text, runtime, mode, resume }) {
   if (runtime.reasoningEffort && !isDeepSeekClaudeRuntime(runtime)) args.push("--effort", runtime.reasoningEffort);
   args.push(text);
   return args;
+}
+
+function interruptClaudeTurn(turn) {
+  if (!turn?.child) return;
+  turn.interrupted = true;
+  if (turn.child.exitCode === null && turn.child.signalCode === null) turn.child.kill("SIGTERM");
+  if (!turn.killTimer) {
+    turn.killTimer = setTimeout(() => {
+      if (turn.child.exitCode === null && turn.child.signalCode === null) turn.child.kill("SIGKILL");
+    }, 5000);
+    turn.killTimer.unref?.();
+  }
 }
 
 function buildTurnBackendConfig(backendConfig = {}, runtime = {}) {

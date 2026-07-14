@@ -3,6 +3,7 @@ const permissionPresets = {
   approve: { sandbox: "workspace-write", approvalPolicy: "on-request" },
   full: { sandbox: "danger-full-access", approvalPolicy: "never" }
 };
+const echoPermissionModes = Object.freeze(Object.keys(permissionPresets));
 
 const defaultRuntimeCommands = ["start", "message", "stop", "compact"];
 const defaultRuntimeEvents = [
@@ -31,7 +32,8 @@ const defaultRuntimeSupports = {
   approvalRequests: false,
   interactionRequests: false,
   gitSummary: true,
-  worktree: true
+  worktree: true,
+  threadArchive: false
 };
 
 const codexRuntimeSupports = {
@@ -43,7 +45,8 @@ const codexRuntimeSupports = {
   approvalRequests: true,
   interactionRequests: true,
   gitSummary: true,
-  worktree: true
+  worktree: true,
+  threadArchive: true
 };
 
 export function codexCompatibleModel(value) {
@@ -92,6 +95,10 @@ export function normalizeAllowedPermissionModes(value = undefined) {
   return Array.from(new Set(modes));
 }
 
+export function normalizeSupportedPermissionModes(value = []) {
+  return normalizeAllowedPermissionModes(value);
+}
+
 export function normalizePermissionMode(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "readonly" || normalized === "read-only" || normalized === "suggest") return "strict";
@@ -128,6 +135,57 @@ export function permissionPresetForMode(mode) {
   return normalized ? permissionPresets[normalized] : { sandbox: "", approvalPolicy: "" };
 }
 
+export function permissionRuntimeForBackend(mode, backend = {}) {
+  const permissionMode = normalizePermissionMode(mode);
+  if (!permissionMode) throw runtimeValidationError("runtime.permission.invalid", "Runtime permission mode is invalid.");
+
+  const supportedPermissionModes = supportedPermissionModesForBackend(backend);
+  if (!supportedPermissionModes.includes(permissionMode)) {
+    throw runtimeValidationError(
+      "runtime.permission.unsupported",
+      `Backend ${backend.backendId || backend.provider || "unknown"} does not support permission mode ${permissionMode}.`
+    );
+  }
+
+  const preset = permissionPresetForMode(permissionMode);
+  const provider = String(backend.provider || backend.backendId || "").trim().toLowerCase();
+  const backendId = String(backend.backendId || backend.provider || "").trim().toLowerCase();
+  const claudeCompatible = backendId.includes("claude") || provider.includes("claude") || provider.includes("anthropic") || provider.includes("deepseek") || provider.includes("volcengine");
+  return {
+    permissionMode,
+    profile: permissionMode,
+    sandbox: preset.sandbox,
+    approvalPolicy: preset.approvalPolicy,
+    providerPermissionMode: claudeCompatible
+      ? permissionMode === "full"
+        ? "bypassPermissions"
+        : permissionMode === "strict"
+          ? "plan"
+          : "acceptEdits"
+      : permissionMode
+  };
+}
+
+export function supportedPermissionModesForBackend(backend = {}) {
+  const advertised = normalizeSupportedPermissionModes(backend.supportedPermissionModes);
+  if (advertised.length > 0) return advertised;
+
+  const provider = String(backend.provider || backend.backendId || "").trim().toLowerCase();
+  const backendId = String(backend.backendId || backend.provider || "").trim().toLowerCase();
+  if (
+    backendId === "codex" ||
+    provider === "codex" ||
+    backendId.includes("claude") ||
+    provider.includes("claude") ||
+    provider.includes("anthropic") ||
+    provider.includes("deepseek") ||
+    provider.includes("volcengine")
+  ) {
+    return [...echoPermissionModes];
+  }
+  return [];
+}
+
 export function normalizeRuntimeBackend(runtime = {}) {
   const normalized = runtime && typeof runtime === "object" ? runtime : {};
   const backendId = String(normalized.backendId || normalized.provider || "codex").trim() || "codex";
@@ -149,12 +207,118 @@ export function normalizeRuntimeBackend(runtime = {}) {
         ? normalized.allowedPermissionModes
         : undefined
     ),
+    supportedPermissionModes: supportedPermissionModesForBackend(normalized),
     capabilities: normalizeRuntimeCapabilities(normalized.capabilities, {
       supports: isCodexBackendId(backendId, provider) ? codexRuntimeSupports : {}
     }),
     unsupportedFeatures: normalizeStringList(normalized.unsupportedFeatures || normalized.capabilities?.unsupportedFeatures),
     health: normalizeRuntimeHealth(normalized.health, { backendId, provider, backendName })
   };
+}
+
+export function resolveRuntimeForAgent(requestedRuntime = {}, agentRuntime = {}) {
+  const requested = requestedRuntime && typeof requestedRuntime === "object" ? requestedRuntime : {};
+  const normalizedAgent = normalizeRuntimeBackend(agentRuntime);
+  const availableBackends = normalizeRuntimeBackends(normalizedAgent.backends, normalizedAgent);
+  const requestedBackendId = String(requested.backendId || requested.provider || "").trim();
+  const selectedBackend = requestedBackendId
+    ? runtimeBackendById(availableBackends, requestedBackendId)
+    : runtimeBackendById(availableBackends, normalizedAgent.defaultBackendId || normalizedAgent.backendId) || availableBackends[0];
+  if (!selectedBackend) {
+    throw runtimeValidationError("runtime.backend.unsupported", `Backend ${requestedBackendId || "default"} is not available.`);
+  }
+  if (requestedBackendId && selectedBackend.backendId !== requestedBackendId && selectedBackend.provider !== requestedBackendId) {
+    throw runtimeValidationError("runtime.backend.unsupported", `Backend ${requestedBackendId} is not available.`);
+  }
+
+  const rawPermissionMode = String(requested.permissionMode || requested.permissionsMode || requested.profile || "").trim();
+  const permissionMode = rawPermissionMode
+    ? normalizePermissionMode(rawPermissionMode)
+    : "full";
+  if (rawPermissionMode && !permissionMode) {
+    throw runtimeValidationError("runtime.permission.invalid", `Permission mode ${rawPermissionMode} is invalid.`);
+  }
+  const permissionRuntime = permissionRuntimeForBackend(permissionMode, selectedBackend);
+
+  const requestedModel = String(requested.model || "").trim();
+  const supportedModels = normalizeSupportedModels(selectedBackend.supportedModels);
+  const selectedModel = requestedModel
+    ? supportedModels.find((model) => model.id === requestedModel || model.model === requestedModel)
+    : null;
+  if (requestedModel && !selectedModel) {
+    throw runtimeValidationError(
+      "runtime.model.unsupported",
+      `Model ${requestedModel} is not supported by backend ${selectedBackend.backendId}.`
+    );
+  }
+  const model = selectedModel?.id || "";
+
+  const rawReasoningEffort = String(requested.reasoningEffort || requested.effort || "").trim();
+  const reasoningEffort = normalizeReasoningEffort(rawReasoningEffort);
+  if (rawReasoningEffort && !reasoningEffort) {
+    throw runtimeValidationError("runtime.reasoning.unsupported", `Reasoning effort ${rawReasoningEffort} is invalid.`);
+  }
+  if (
+    reasoningEffort &&
+    selectedModel?.supportedReasoningEfforts?.length > 0 &&
+    !selectedModel.supportedReasoningEfforts.includes(reasoningEffort)
+  ) {
+    throw runtimeValidationError(
+      "runtime.reasoning.unsupported",
+      `Reasoning effort ${reasoningEffort} is not supported by model ${model}.`
+    );
+  }
+
+  const rawWorktreeMode = String(requested.worktreeMode || "off").trim().toLowerCase() || "off";
+  if (!["off", "always"].includes(rawWorktreeMode)) {
+    throw runtimeValidationError("runtime.worktree.unsupported", `Worktree mode ${rawWorktreeMode} is invalid.`);
+  }
+  const desktopWorktreeMode = normalizeWorktreeMode(selectedBackend.worktreeMode);
+  if (desktopWorktreeMode === "off" && rawWorktreeMode !== "off") {
+    throw runtimeValidationError("runtime.worktree.unsupported", "Worktree execution is not enabled for this backend.");
+  }
+  const worktreeMode = desktopWorktreeMode === "always" ? "always" : rawWorktreeMode;
+  const mcpProfileId = sanitizeMcpProfileId(requested.mcpProfileId || requested.mcpProfile || requested.mcp);
+  const advertisedMcpProfiles = Array.isArray(normalizedAgent.mcp?.profiles)
+    ? normalizedAgent.mcp.profiles.map((profile) => String(profile?.id || "").trim()).filter(Boolean)
+    : [];
+  if (mcpProfileId && !advertisedMcpProfiles.includes(mcpProfileId)) {
+    throw runtimeValidationError("runtime.profile.unsupported", `MCP profile ${mcpProfileId} is not available.`);
+  }
+
+  return {
+    backendId: selectedBackend.backendId,
+    provider: selectedBackend.provider,
+    backendName: selectedBackend.backendName,
+    command: "",
+    ...permissionRuntime,
+    model,
+    reasoningEffort,
+    mcpProfileId,
+    worktreeMode,
+    unsupportedModels: [],
+    capabilities: selectedBackend.capabilities,
+    unsupportedFeatures: selectedBackend.unsupportedFeatures || selectedBackend.capabilities?.unsupportedFeatures || [],
+    timeoutMs: Number(requested.timeoutMs || 0) || null
+  };
+}
+
+export function runtimePreferenceFromResolvedRuntime(runtime = {}) {
+  return {
+    backendId: String(runtime.backendId || "").trim(),
+    model: String(runtime.model || "").trim(),
+    reasoningEffort: normalizeReasoningEffort(runtime.reasoningEffort),
+    permissionMode: normalizePermissionMode(runtime.permissionMode),
+    worktreeMode: String(runtime.worktreeMode || "off").trim() === "always" ? "always" : "off",
+    mcpProfileId: sanitizeMcpProfileId(runtime.mcpProfileId)
+  };
+}
+
+function runtimeValidationError(code, message) {
+  const error = new Error(message);
+  error.statusCode = 422;
+  error.code = code;
+  return error;
 }
 
 export function normalizeRuntimeBackends(backends = [], fallbackRuntime = {}) {
@@ -210,7 +374,7 @@ export function sanitizeRuntimeForAgent(requestedRuntime = {}, agentRuntime = {}
     normalizedAgent;
   const allowedModes = Array.isArray(selectedBackend.allowedPermissionModes) ? selectedBackend.allowedPermissionModes : [];
   const requestedMode = permissionModeFromRuntime(requested);
-  const fallbackMode = permissionModeFromRuntime(selectedBackend) || allowedModes[0] || "";
+  const fallbackMode = "full";
   const permissionMode = requestedMode || fallbackMode;
   const preset = permissionPresetForMode(permissionMode);
   const desktopDefault = desktopPermissionDefault(selectedBackend);
@@ -225,16 +389,19 @@ export function sanitizeRuntimeForAgent(requestedRuntime = {}, agentRuntime = {}
       ? selectedBackend.unsupportedModels.map((model) => String(model || "").trim()).filter(Boolean)
       : []
   );
+  const selectedIsCodexBackend = isCodexBackendId(selectedBackend.backendId, selectedBackend.provider);
   const hasSupportedModelList = supportedModels.length > 0;
-  const model = sanitizeModel(requested.model, { supportedModelIds, unsupportedModelIds, hasSupportedModelList });
+  const model = selectedIsCodexBackend && !hasSupportedModelList
+    ? ""
+    : sanitizeModel(requested.model, { supportedModelIds, unsupportedModelIds, hasSupportedModelList });
   const requestedReasoningEffort = requested.reasoningEffort || requested.effort;
   const selectedModelInfo = supportedModels.find((item) => item.id === model || item.model === model);
   const effectiveReasoningEffort = requestedReasoningEffort || (model ? selectedModelInfo?.defaultReasoningEffort : "");
-  const reasoningEffort = requestedModel && !model
+  const reasoningEffort = (selectedIsCodexBackend && !hasSupportedModelList) || (requestedModel && !model)
     ? ""
     : sanitizeReasoningEffort(effectiveReasoningEffort, model || selectedBackend.model, supportedModels);
-  const worktreeModeExplicit = hasExplicitWorktreeMode(requested);
-  const worktreeMode = sanitizeWorktreeMode(requested.worktreeMode, selectedBackend.worktreeMode, { requestedExplicit: worktreeModeExplicit });
+  const worktreeMode = sanitizeWorktreeMode(requested.worktreeMode, selectedBackend.worktreeMode);
+  const mcpProfileId = sanitizeMcpProfileId(requested.mcpProfileId || requested.mcpProfile || requested.mcp);
   const backendName = String(
     selectedBackend.backendName ||
       selectedBackend.name ||
@@ -253,10 +420,10 @@ export function sanitizeRuntimeForAgent(requestedRuntime = {}, agentRuntime = {}
     capabilities: selectedBackend.capabilities,
     unsupportedFeatures: selectedBackend.unsupportedFeatures || selectedBackend.capabilities?.unsupportedFeatures || [],
     reasoningEffort,
+    mcpProfileId,
     profile: permissionMode,
     permissionMode,
     worktreeMode,
-    worktreeModeExplicit,
     timeoutMs: Number(requested.timeoutMs || 0) || null
   };
 }
@@ -317,23 +484,27 @@ function sanitizeReasoningEffort(value, model, supportedModels) {
   return modelInfo.supportedReasoningEfforts.includes(reasoningEffort) ? reasoningEffort : "";
 }
 
+function sanitizeMcpProfileId(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
 function normalizeWorktreeMode(value) {
   const mode = String(value || "").trim().toLowerCase();
   return ["off", "optional", "always"].includes(mode) ? mode : "off";
 }
 
-function sanitizeWorktreeMode(requestedMode, agentMode, { requestedExplicit = false } = {}) {
+function sanitizeWorktreeMode(requestedMode, agentMode) {
   const desktopMode = normalizeWorktreeMode(agentMode);
   if (desktopMode === "always") return "always";
   if (desktopMode === "optional") {
-    return requestedExplicit && String(requestedMode || "").trim().toLowerCase() === "off" ? "off" : "always";
+    return String(requestedMode || "").trim().toLowerCase() === "always" ? "always" : "off";
   }
   return "off";
-}
-
-function hasExplicitWorktreeMode(runtime = {}) {
-  if (!runtime || typeof runtime !== "object") return false;
-  return runtime.worktreeModeExplicit === true;
 }
 
 function dedupeRuntimeBackends(backends = []) {

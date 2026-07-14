@@ -3,285 +3,130 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Echo Desktop Settings</title>
+    <title>Echo</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <header class="topbar">
-      <div>
-        <h1>Echo</h1>
-        <p id="envPath">Loading...</p>
-      </div>
-      <div class="topActions">
-        <button type="button" id="desktopUpdate">更新桌面端</button>
-        <button type="button" id="networkTest">测试网络</button>
-        <button type="button" id="restartAgent">重启桌面端</button>
-      </div>
-    </header>
+    <main class="shell">
+      <header class="appHeader">
+        <div class="brandMark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div class="brandCopy">
+          <h1>Echo</h1>
+          <p id="desktopName">Desktop</p>
+        </div>
+        <div id="connectionBadge" class="statusBadge loading" role="status">
+          <span class="statusDot"></span>
+          <span id="connectionLabel">连接中</span>
+        </div>
+      </header>
 
-    <main class="layout">
-      <nav class="sidebar" aria-label="Settings sections">
-        <div class="sidebarTitle">Desktop</div>
-        <button type="button" class="tab active" data-tab="overview">工作台</button>
-        <button type="button" class="tab" data-tab="connection">连接</button>
-        <button type="button" class="tab" data-tab="network">VPN</button>
-        <button type="button" class="tab" data-tab="codex">Runtime</button>
-      </nav>
+      <section id="loadingView" class="loadingView" aria-label="正在载入">
+        <div class="skeleton heroSkeleton"></div>
+        <div class="skeleton lineSkeleton"></div>
+        <div class="skeleton actionSkeleton"></div>
+      </section>
 
-      <form id="settingsForm" class="content">
-        <section class="panel active" data-panel="overview">
-          <div class="viewHeader">
+      <section id="mainView" class="mainView" hidden>
+        <section class="pairingSection" aria-labelledby="pairingTitle">
+          <div class="sectionHeading">
             <div>
-              <span class="viewEyebrow">Desktop Agent</span>
-              <h2>Agent Workbench</h2>
+              <h2 id="pairingTitle">手机配对</h2>
+              <p id="pairingHint">用手机扫描二维码</p>
             </div>
-            <button type="button" id="refreshHealth">刷新状态</button>
+            <button class="iconButton" type="button" id="refreshPairingQr" title="刷新二维码" aria-label="刷新二维码">
+              <span aria-hidden="true">↻</span>
+            </button>
           </div>
-          <div id="agentWorkbench" class="agentWorkbench">Loading...</div>
-          <div class="sectionLabel">Diagnostics</div>
-          <div id="healthGrid" class="healthGrid"></div>
+
+          <div id="pairingQr" class="qrStage" aria-live="polite">
+            <div class="qrLoading"><span></span><span></span><span></span></div>
+          </div>
+
+          <button class="primaryButton" type="button" id="copyPairingUrl">复制配对链接</button>
         </section>
 
-        <section class="panel" data-panel="connection">
-          <div class="viewHeader">
-            <div>
-              <span class="viewEyebrow">Relay</span>
-              <h2>连接</h2>
-            </div>
-            <button type="submit">保存配置</button>
+        <section class="quickStatus" aria-label="桌面状态">
+          <div class="statusRow">
+            <span class="rowLabel">Relay</span>
+            <strong id="relayStatus">检查中</strong>
           </div>
-          <div class="notice">
-            互联网 relay 模式下，手机端发起和继续 agent 会话；桌面 agent 拉取会话命令，并在本机授权工程目录里执行。
+          <div class="statusRow">
+            <span class="rowLabel">Agent</span>
+            <strong id="agentStatus">检查中</strong>
           </div>
-          <div class="grid">
-            <label>
-              Relay URL
-              <input data-key="ECHO_RELAY_URL" autocomplete="off" />
-            </label>
-            <label>
-              Pairing Token
-              <input data-key="ECHO_TOKEN" data-secret="true" type="password" autocomplete="new-password" />
-              <span class="secretState" data-secret-state="ECHO_TOKEN"></span>
-              <span class="inlineCheck"><input type="checkbox" data-clear-secret="ECHO_TOKEN" /> 清空</span>
-            </label>
+          <div class="statusRow">
+            <span class="rowLabel">能力</span>
+            <strong id="capabilityStatus">检查中</strong>
           </div>
         </section>
 
-        <section class="panel" data-panel="network">
-          <div class="viewHeader">
-            <div>
-              <span class="viewEyebrow">Network</span>
-              <h2>VPN</h2>
-            </div>
-            <button type="submit">保存配置</button>
-          </div>
-          <div class="grid">
+        <div class="actionBar">
+          <button type="button" id="restartAgent">重启</button>
+          <button type="button" id="networkTest">诊断</button>
+          <button type="button" id="desktopUpdate">更新</button>
+        </div>
+
+        <button class="detailsToggle" type="button" id="detailsToggle" aria-expanded="false" aria-controls="detailsPanel">
+          <span>连接详情</span>
+          <span class="chevron" aria-hidden="true">⌄</span>
+        </button>
+
+        <section id="detailsPanel" class="detailsPanel" hidden>
+          <dl id="detailsList" class="detailsList"></dl>
+          <p id="envPath" class="envPath"></p>
+        </section>
+      </section>
+
+      <section id="setupView" class="setupView" hidden>
+        <div class="setupHeading">
+          <span class="setupStep">首次连接</span>
+          <h2>连接到 Echo Relay</h2>
+        </div>
+
+        <form id="settingsForm" class="setupForm">
+          <input class="srOnly" data-username-proxy type="text" autocomplete="username" tabindex="-1" aria-hidden="true" />
+          <label>
+            <span>Relay URL</span>
+            <input data-key="ECHO_RELAY_URL" type="url" autocomplete="url" placeholder="https://echo.example.com" required />
+          </label>
+          <label>
+            <span>手机配对 Token</span>
+            <input data-key="ECHO_TOKEN" data-secret="true" type="password" autocomplete="new-password" placeholder="ept_..." required />
+          </label>
+          <label>
+            <span>Desktop Agent Token</span>
+            <input data-key="ECHO_AGENT_TOKEN" data-secret="true" type="password" autocomplete="new-password" placeholder="eat_..." />
+          </label>
+          <div class="fieldGrid">
             <label>
-              Proxy
-              <input data-key="ECHO_PROXY_URL" list="proxyOptions" autocomplete="off" />
+              <span>Agent ID</span>
+              <input data-key="ECHO_AGENT_ID" autocomplete="off" placeholder="my-mac" required />
+            </label>
+            <label>
+              <span>显示名称</span>
+              <input data-key="ECHO_AGENT_DISPLAY_NAME" autocomplete="off" placeholder="My Mac" />
+            </label>
+          </div>
+          <label>
+            <span>Owner</span>
+            <input data-key="ECHO_AGENT_OWNER_USERNAME" autocomplete="username" placeholder="owner" />
+          </label>
+          <details class="networkDetails">
+            <summary>网络代理</summary>
+            <label>
+              <span>Proxy</span>
+              <input data-key="ECHO_PROXY_URL" list="proxyOptions" autocomplete="off" placeholder="system" />
               <datalist id="proxyOptions">
-                <option value=""></option>
                 <option value="system"></option>
                 <option value="http://127.0.0.1:7897"></option>
               </datalist>
             </label>
-            <label>
-              NO_PROXY
-              <input data-key="ECHO_NO_PROXY" autocomplete="off" />
-            </label>
-            <label>
-              <span class="inlineCheck"><input type="checkbox" data-key="ECHO_PROXY_FALLBACK_DIRECT" /> 系统代理不可达时直连兜底</span>
-            </label>
-            <label>
-              Timeout ms
-              <input data-key="ECHO_HTTP_TIMEOUT_MS" type="number" min="1000" max="300000" step="1000" />
-            </label>
-          </div>
-        </section>
+          </details>
+          <button class="primaryButton" type="submit">保存并连接</button>
+        </form>
+      </section>
 
-        <section class="panel" data-panel="codex">
-          <div class="viewHeader">
-            <div>
-              <span class="viewEyebrow">Runtime</span>
-              <h2>Agent Backends</h2>
-            </div>
-            <button type="submit">保存配置</button>
-          </div>
-          <div class="notice">
-            这些是桌面端真正使用的运行时配置：它们控制本机 Codex、Claude Code 和额外 backend profile 在你的项目目录里用哪个模型、profile、sandbox 和 worktree 执行任务。
-          </div>
-          <div class="grid">
-            <label class="switch">
-              <input data-key="ECHO_CODEX_ENABLED" type="checkbox" />
-              <span>启用 Codex backend</span>
-            </label>
-            <div class="wide workspaceManager">
-              <div class="workspaceManagerHeader">
-                <div>
-                  <h3>工程目录</h3>
-                  <p>这些目录会出现在手机端“项目”下拉框里。agent 只会在这里授权的目录中执行。</p>
-                </div>
-                <div class="workspaceManagerActions">
-                  <button type="button" id="discoverWorkspaces">发现工程</button>
-                  <button type="button" id="browseWorkspaceRoot">浏览目录</button>
-                  <button type="button" id="addWorkspace">手动添加</button>
-                </div>
-              </div>
-              <div id="workspaceSuggestions" class="workspaceSuggestions" hidden></div>
-              <div id="directoryBrowser" class="directoryBrowser" hidden>
-                <div class="directoryBrowserHeader">
-                  <button type="button" id="browseHome">Home</button>
-                  <button type="button" id="browseParent">上一级</button>
-                  <button type="button" id="selectCurrentDirectory">选择当前目录</button>
-                  <span id="directoryPath"></span>
-                </div>
-                <div id="directoryEntries" class="directoryEntries"></div>
-              </div>
-              <div id="workspaceRows" class="workspaceRows"></div>
-              <textarea data-key="ECHO_CODEX_WORKSPACES" class="workspaceRaw" rows="4" aria-hidden="true" tabindex="-1"></textarea>
-            </div>
-            <label>
-              Codex App Path
-              <input data-key="ECHO_CODEX_APP_PATH" autocomplete="off" placeholder="/Applications/Codex.app/Contents/Resources/codex" />
-              <span class="fieldHint" id="codexDetectedPath">检测中...</span>
-            </label>
-            <label>
-              默认权限
-              <select id="codexDefaultPermissionMode">
-                <option value="approve">审批后写入</option>
-                <option value="strict">只读</option>
-                <option value="full-review">全权限 · 仍需审批</option>
-                <option value="full">全权限</option>
-              </select>
-              <span class="fieldHint">只在手机端选择“默认”时生效；手机端仍可在允许范围内为每个会话选择权限。</span>
-            </label>
-            <input data-key="ECHO_CODEX_SANDBOX" type="hidden" />
-            <input data-key="ECHO_CODEX_APPROVAL_POLICY" type="hidden" />
-            <label>
-              Approval Timeout ms
-              <input data-key="ECHO_CODEX_APPROVAL_TIMEOUT_MS" type="number" min="10000" max="7200000" step="10000" />
-            </label>
-            <label>
-              手机端可用权限
-              <input data-key="ECHO_CODEX_ALLOWED_PERMISSION_MODES" autocomplete="off" placeholder="strict,approve,full" />
-              <span class="fieldHint">这是桌面端的安全边界，不是本次任务选择。模型和推理强度由手机端每次发送时选择。</span>
-            </label>
-            <label>
-              Worktree 模式
-              <select data-key="ECHO_CODEX_WORKTREE_MODE">
-                <option value="off">关闭</option>
-                <option value="optional">手机端默认开启，可手动关闭</option>
-                <option value="always">始终开启</option>
-              </select>
-              <span class="fieldHint">控制手机端新会话是否运行在独立 Git worktree 中；关闭时手机端不能越权开启。</span>
-            </label>
-            <label>
-              Worktree 根目录
-              <input data-key="ECHO_CODEX_WORKTREE_ROOT" autocomplete="off" placeholder="~/.echo-voice/worktrees" />
-              <span class="fieldHint">只允许桌面端在这个受控目录里创建和清理 worktree。</span>
-            </label>
-            <label>
-              Worktree 保留天数
-              <input data-key="ECHO_CODEX_WORKTREE_RETENTION_DAYS" type="number" min="1" max="365" step="1" />
-              <span class="fieldHint">桌面端会自动删除超过保留期且 Git 状态干净的 worktree；有未提交改动的目录会保留。</span>
-            </label>
-            <label>
-              Timeout ms
-              <input data-key="ECHO_CODEX_TIMEOUT_MS" type="number" min="10000" max="7200000" step="10000" />
-            </label>
-
-            <div class="wide sectionLabel">Claude Code</div>
-            <label class="switch">
-              <input data-key="ECHO_CLAUDE_ENABLED" type="checkbox" />
-              <span>启用 Claude Code backend</span>
-            </label>
-            <label>
-              Claude Command
-              <input data-key="ECHO_CLAUDE_COMMAND" autocomplete="off" placeholder="claude" />
-            </label>
-            <label>
-              Base URL
-              <input data-key="ECHO_CLAUDE_BASE_URL" autocomplete="off" placeholder="https://api.anthropic.com" />
-            </label>
-            <label>
-              Auth Token
-              <input data-key="ECHO_CLAUDE_AUTH_TOKEN" data-secret="true" type="password" autocomplete="new-password" />
-              <span class="secretState" data-secret-state="ECHO_CLAUDE_AUTH_TOKEN"></span>
-              <span class="inlineCheck"><input type="checkbox" data-clear-secret="ECHO_CLAUDE_AUTH_TOKEN" /> 清空</span>
-            </label>
-            <label>
-              默认模型
-              <input data-key="ECHO_CLAUDE_MODEL" autocomplete="off" placeholder="sonnet" />
-            </label>
-            <label>
-              可用模型列表
-              <input data-key="ECHO_CLAUDE_SUPPORTED_MODELS" autocomplete="off" placeholder="sonnet,opus" />
-            </label>
-            <label>
-              默认权限模式
-              <input data-key="ECHO_CLAUDE_PERMISSION_MODE" autocomplete="off" placeholder="strict" />
-            </label>
-            <label>
-              手机端可用权限
-              <input data-key="ECHO_CLAUDE_ALLOWED_PERMISSION_MODES" autocomplete="off" placeholder="strict,approve,full" />
-            </label>
-            <label>
-              推理强度
-              <input data-key="ECHO_CLAUDE_REASONING_EFFORT" autocomplete="off" placeholder="low" />
-            </label>
-            <label>
-              Approval Timeout ms
-              <input data-key="ECHO_CLAUDE_APPROVAL_TIMEOUT_MS" type="number" min="10000" max="7200000" step="10000" />
-            </label>
-            <label>
-              Timeout ms
-              <input data-key="ECHO_CLAUDE_TIMEOUT_MS" type="number" min="10000" max="7200000" step="10000" />
-            </label>
-            <label>
-              Worktree 模式
-              <select data-key="ECHO_CLAUDE_WORKTREE_MODE">
-                <option value="off">关闭</option>
-                <option value="optional">手机端默认开启，可手动关闭</option>
-                <option value="always">始终开启</option>
-              </select>
-            </label>
-            <label>
-              Subagent 模型
-              <input data-key="ECHO_CLAUDE_SUBAGENT_MODEL" autocomplete="off" placeholder="sonnet" />
-            </label>
-            <label class="switch">
-              <input data-key="ECHO_CLAUDE_AGENT_TEAMS_ENABLED" type="checkbox" />
-              <span>启用 agent teams</span>
-            </label>
-            <label class="wide">
-              额外 backend profiles
-              <textarea data-key="ECHO_AGENT_BACKENDS_JSON" rows="6" spellcheck="false" placeholder='[{"id":"deepseek-code","type":"claude-code","name":"DeepSeek Code",...}]'></textarea>
-            </label>
-          </div>
-        </section>
-      </form>
-
-      <aside class="outputPanel">
-        <section class="sideSection pairingPanel">
-          <div>
-            <div class="sectionHeader compact">
-              <h2>手机配对</h2>
-              <button type="button" id="refreshPairingQr">刷新</button>
-            </div>
-            <div class="qrBox" id="pairingQr">Loading...</div>
-            <div class="pairingActions">
-              <button type="button" id="copyPairingUrl">复制链接</button>
-            </div>
-          </div>
-        </section>
-        <section class="sideSection">
-        <div class="sectionHeader compact">
-          <h2>状态</h2>
-          <button type="button" id="reloadState">刷新</button>
-        </div>
-        <pre id="output">Ready.</pre>
-        </section>
-      </aside>
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
     </main>
 
     <script src="/app.js" type="module"></script>

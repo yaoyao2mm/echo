@@ -36,6 +36,26 @@ const SESSION_RESTORE_ICON = `
   </svg>
 `;
 
+const SESSION_DELETE_ICON = `
+  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path
+      d="M4.5 7h15M9.5 7V5.5a1.5 1.5 0 0 1 1.5-1.5h2a1.5 1.5 0 0 1 1.5 1.5V7M7 7l.7 12a2 2 0 0 0 2 1.9h4.6a2 2 0 0 0 2-1.9L17 7"
+      fill="none"
+      stroke="currentColor"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="1.7"
+    />
+    <path
+      d="M10.5 11v5M14.5 11v5"
+      fill="none"
+      stroke="currentColor"
+      stroke-linecap="round"
+      stroke-width="1.7"
+    />
+  </svg>
+`;
+
 function sessionArchiveActionIcon(archived) {
   return archived ? SESSION_RESTORE_ICON : SESSION_ARCHIVE_ICON;
 }
@@ -46,6 +66,20 @@ function compactAssistantBackendName(value) {
   if (/claude/i.test(normalized)) return "Claude";
   if (/codex/i.test(normalized)) return "Codex";
   return normalized;
+}
+
+export function previewProjectSessions(jobs = [], options = {}) {
+  const allJobs = Array.isArray(jobs) ? jobs : [];
+  const limit = Math.max(1, Number(options.limit || 5) || 5);
+  if (options.expanded || allJobs.length <= limit) return allJobs;
+
+  const preview = allJobs.slice(0, limit);
+  const selectedSessionId = String(options.selectedSessionId || "").trim();
+  if (selectedSessionId && !preview.some((job) => job.id === selectedSessionId)) {
+    const selected = allJobs.find((job) => job.id === selectedSessionId);
+    if (selected) preview[limit - 1] = selected;
+  }
+  return preview;
 }
 
 export function installSessions(app) {
@@ -99,7 +133,7 @@ export function installSessions(app) {
 
     try {
       const source = options.draft ? app.normalizeAgentMarkdownDraft(raw) : raw;
-      const parsed = renderer.markdown.render(source);
+      const parsed = renderer.markdown.render(source, options);
       return {
         html: renderer.sanitizer.sanitize(parsed, app.agentMarkdownSanitizeConfig()),
         degraded: false,
@@ -151,9 +185,20 @@ export function installSessions(app) {
     markdown.renderer.rules.link_open = (tokens, index, options, env, self) => {
       const token = tokens[index];
       const href = token.attrGet("href");
-      if (href && !app.isSafeAgentMarkdownHref(href)) token.attrSet("href", "");
-      token.attrSet("target", "_blank");
-      token.attrSet("rel", "noreferrer noopener");
+      const classified = app.classifyAgentMarkdownLink(href, env);
+      if (classified.kind === "workspace-file") {
+        token.attrSet("href", `#echo-workspace-file=${encodeURIComponent(classified.reference)}`);
+        token.attrJoin("class", "workspace-file-link");
+        token.attrSet("title", classified.reference);
+      } else if (classified.kind === "external" || classified.kind === "echo-resource") {
+        token.attrSet("href", classified.href);
+        token.attrSet("target", "_blank");
+        token.attrSet("rel", "noreferrer noopener");
+      } else if (classified.kind === "fragment") {
+        token.attrSet("href", classified.href);
+      } else {
+        token.attrSet("href", "");
+      }
       return defaultLinkOpen(tokens, index, options, env, self);
     };
 
@@ -223,15 +268,54 @@ export function installSessions(app) {
   };
 
   app.isSafeAgentMarkdownHref = function isSafeAgentMarkdownHref(value) {
+    return app.classifyAgentMarkdownLink(value).kind !== "invalid";
+  };
+
+  app.classifyAgentMarkdownLink = function classifyAgentMarkdownLink(value, context = {}) {
     const href = String(value || "").trim();
-    if (!href) return false;
-    if (/^(#|\/(?!\/)|\.\.?\/)/.test(href)) return true;
-    try {
-      const url = new URL(href, String(windowRef?.location?.origin || "http://localhost"));
-      return ["http:", "https:", "mailto:"].includes(url.protocol);
-    } catch {
-      return false;
+    if (!href) return { kind: "invalid", href: "" };
+    if (app.isCodexDownloadPath(href)) return { kind: "echo-resource", href: app.authenticatedResourcePath(href) };
+    if (href.startsWith("#")) {
+      const fragmentId = href.slice(1);
+      return /^[A-Za-z][\w:.-]*$/.test(fragmentId) && document?.getElementById?.(fragmentId)
+        ? { kind: "fragment", href }
+        : { kind: "invalid", href: "" };
     }
+    try {
+      const url = new URL(href);
+      if (["http:", "https:", "mailto:"].includes(url.protocol)) return { kind: "external", href };
+    } catch {
+      // Relative values may be workspace references.
+    }
+
+    const reference = app.normalizeTranscriptFileLink(href, context);
+    return reference ? { kind: "workspace-file", href, reference } : { kind: "invalid", href: "" };
+  };
+
+  app.normalizeTranscriptFileLink = function normalizeTranscriptFileLink(value, context = {}) {
+    let href = String(value || "").trim();
+    if (!href || href.includes("\0") || href.startsWith("//") || href.startsWith("~")) return "";
+    try {
+      href = decodeURIComponent(href);
+    } catch {
+      return "";
+    }
+    const hashLine = /#L(\d+)(?:C\d+)?$/i.exec(href);
+    const colonLine = /:(\d+)(?::\d+)?$/.exec(href);
+    const suffix = hashLine || colonLine;
+    if (suffix) href = href.slice(0, suffix.index);
+    href = href.replaceAll("\\", "/");
+    if (href.startsWith("/")) {
+      const workspacePath = String(context.workspacePath || app.currentWorkspace?.()?.path || "").replaceAll("\\", "/").replace(/\/$/, "");
+      if (!workspacePath || (href !== workspacePath && !href.startsWith(`${workspacePath}/`))) return "";
+      href = href.slice(workspacePath.length).replace(/^\/+/, "");
+    }
+    href = href.replace(/^\.\//, "");
+    href = href.replace(/\/+$/, "");
+    const parts = href.split("/");
+    if (!href || parts.some((part) => !part || part === "." || part === "..")) return "";
+    const line = suffix ? Number(suffix[1]) : 0;
+    return `${parts.join("/")}${line > 0 ? `#L${line}` : ""}`;
   };
 
   app.safeAgentMarkdownLanguage = function safeAgentMarkdownLanguage(value) {
@@ -272,6 +356,7 @@ export function installSessions(app) {
       app.closeCodexSessionStream();
       app.applyRuntimeDraft(state.runtimePreferences, { persist: false, dirty: false });
       app.renderEmptySessionDetail({ title: "选择工程", body: "先选择工程，再开始或继续会话。" });
+      app.restoreComposerMode?.({ includeSession: false });
       return;
     }
 
@@ -279,12 +364,15 @@ export function installSessions(app) {
       archived: state.showArchivedSessions ? "true" : "false",
       projectId
     });
+    const targetAgentId = app.currentTargetAgentId?.() || "";
+    if (targetAgentId) params.set("targetAgentId", targetAgentId);
     const data = await app.apiGet(`/api/codex/sessions?${params.toString()}`);
     const jobs = data.items.slice(0, 30);
     await app.renderProjectSessionList(jobs, options);
   };
 
   app.renderProjectSessionList = async function renderProjectSessionList(jobs, options = {}) {
+    app.lastRenderedProjectSessions = Array.isArray(jobs) ? jobs : [];
     elements.codexJobs.innerHTML = "";
     if (jobs.length === 0) {
       const emptyCopy = state.showArchivedSessions ? "还没有归档会话" : "还没有 agent 会话";
@@ -311,14 +399,26 @@ export function installSessions(app) {
       app.closeCodexSessionStream();
     }
 
-    if (!state.selectedCodexJobId && !state.composingNewSession) {
+    if (!state.selectedCodexJobId && !state.composingNewSession && !state.showArchivedSessions) {
       state.selectedCodexJobId = app.preferredSession(jobs)?.id || jobs[0].id;
     } else if (state.selectedCodexJobId && !jobs.some((job) => job.id === state.selectedCodexJobId)) {
-      state.selectedCodexJobId = state.composingNewSession ? "" : app.preferredSession(jobs)?.id || jobs[0].id;
+      state.selectedCodexJobId =
+        state.composingNewSession || state.showArchivedSessions ? "" : app.preferredSession(jobs)?.id || jobs[0].id;
     }
 
-    for (const job of jobs) {
+    const projectKey = app.currentWorkspace?.()?.key || app.currentProjectId();
+    const expanded = app.projectConversationsExpanded?.(projectKey) || false;
+    const visibleJobs = previewProjectSessions(jobs, {
+      limit: 5,
+      expanded,
+      selectedSessionId: state.selectedCodexJobId
+    });
+
+    for (const job of visibleJobs) {
       elements.codexJobs.append(app.renderSessionButton(job));
+    }
+    if (jobs.length > visibleJobs.length || expanded) {
+      elements.codexJobs.append(app.renderProjectSessionToggle(jobs.length, visibleJobs.length, expanded, projectKey));
     }
 
     if (state.selectedCodexJobId) {
@@ -340,7 +440,11 @@ export function installSessions(app) {
     state.selectedCodexSession = null;
     app.closeCodexSessionStream();
     app.applyRuntimeDraft(state.runtimePreferences, { persist: false, dirty: false });
-    app.renderEmptySessionDetail({ title: "新会话", body: "直接发送，开始新的 agent 会话。" });
+    app.renderEmptySessionDetail(
+      state.showArchivedSessions
+        ? { title: "归档", body: "选择一条归档会话查看详情。" }
+        : { title: "新会话", body: "直接发送，开始新的 agent 会话。" }
+    );
   };
 
   app.mergeCodexSessionSummary = function mergeCodexSessionSummary(current, summary) {
@@ -361,6 +465,7 @@ export function installSessions(app) {
     item.className = "conversation-item";
     item.classList.toggle("active", job.id === state.selectedCodexJobId);
     const archived = Boolean(job.archivedAt);
+    item.classList.toggle("archived", archived);
     const pendingInteractionCount = Number(job.pendingInteractionCount || 0);
     const pendingApprovalCount = Number(job.pendingApprovalCount || 0);
     const canArchive =
@@ -370,6 +475,12 @@ export function installSessions(app) {
       !job.pendingCommandCount;
     const alertText = app.sessionPendingDecisionText(job);
     const archiveActionLabel = archived ? "恢复会话" : "归档会话";
+    const canDelete =
+      archived &&
+      !["queued", "starting", "running"].includes(job.status) &&
+      !pendingApprovalCount &&
+      !pendingInteractionCount &&
+      !job.pendingCommandCount;
     item.innerHTML = `
       <button class="conversation-item-open" type="button">
         <div class="conversation-item-head">
@@ -378,20 +489,35 @@ export function installSessions(app) {
         </div>
         <div class="conversation-item-meta">
           <span class="conversation-item-status ${app.escapeHtml(job.status)}">${app.escapeHtml(app.statusLabel(job.status))}</span>
-          <span>${app.escapeHtml(app.sessionProjectLabel(job.projectId))}</span>
+          <span>${app.escapeHtml(app.sessionProjectLabel(job.projectId, job.targetAgentId))}</span>
         </div>
         <span class="conversation-item-preview">${app.escapeHtml(app.jobPreview(job))}</span>
         ${alertText ? `<span class="conversation-item-alert">${app.escapeHtml(alertText)}</span>` : ""}
       </button>
-      <button
-        class="conversation-item-archive"
-        type="button"
-        aria-label="${archiveActionLabel}"
-        title="${archiveActionLabel}"
-        ${canArchive || archived ? "" : "disabled"}
-      >
-        ${sessionArchiveActionIcon(archived)}
-      </button>
+      <div class="conversation-item-actions">
+        <button
+          class="conversation-item-action conversation-item-archive"
+          type="button"
+          aria-label="${archiveActionLabel}"
+          title="${archiveActionLabel}"
+          ${canArchive ? "" : "disabled"}
+        >
+          ${sessionArchiveActionIcon(archived)}
+        </button>
+        ${
+          archived
+            ? `<button
+                class="conversation-item-action conversation-item-delete"
+                type="button"
+                aria-label="删除归档会话"
+                title="删除归档会话"
+                ${canDelete ? "" : "disabled"}
+              >
+                ${SESSION_DELETE_ICON}
+              </button>`
+            : ""
+        }
+      </div>
     `;
     item.querySelector(".conversation-item-open").addEventListener("click", () => {
       state.composingNewSession = false;
@@ -399,7 +525,32 @@ export function installSessions(app) {
       app.closeSessionSidebar({ restoreFocus: false });
     });
     item.querySelector(".conversation-item-archive").addEventListener("click", () => app.archiveSession(job.id, !archived));
+    item.querySelector(".conversation-item-delete")?.addEventListener("click", () => app.deleteArchivedSession(job));
     return item;
+  };
+
+  app.projectConversationsExpanded = function projectConversationsExpanded(projectKey) {
+    const key = String(projectKey || "").trim();
+    return Boolean(key && state.expandedProjectConversationKeys?.has?.(key));
+  };
+
+  app.setProjectConversationsExpanded = function setProjectConversationsExpanded(projectKey, expanded) {
+    const key = String(projectKey || "").trim();
+    if (!key) return;
+    if (!state.expandedProjectConversationKeys) state.expandedProjectConversationKeys = new Set();
+    if (expanded) state.expandedProjectConversationKeys.add(key);
+    else state.expandedProjectConversationKeys.delete(key);
+    app.renderProjectSessionList(app.lastRenderedProjectSessions || [], { skipSelectedDetailLoad: true });
+  };
+
+  app.renderProjectSessionToggle = function renderProjectSessionToggle(total, visible, expanded, projectKey) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "project-session-more";
+    button.textContent = expanded ? "收起" : `显示全部 ${total}`;
+    button.setAttribute("aria-expanded", expanded ? "true" : "false");
+    button.addEventListener("click", () => app.setProjectConversationsExpanded(projectKey, !expanded));
+    return button;
   };
 
   app.archiveSession = async function archiveSession(sessionId, archived) {
@@ -412,6 +563,35 @@ export function installSessions(app) {
         app.renderEmptySessionDetail(
           archived ? { title: "已归档", body: "这个会话已移到归档。" } : { title: "已恢复", body: "这个会话已经回到最近列表。" }
         );
+      }
+      await app.loadCodexJobs();
+    } catch (error) {
+      if (!app.handleAuthError(error, "当前配对已失效，请重新扫描桌面端二维码。")) {
+        app.toast(error.message);
+      }
+    }
+  };
+
+  app.deleteArchivedSession = async function deleteArchivedSession(session) {
+    if (!session?.id || !session.archivedAt) return;
+    const confirmed = await app.confirm({
+      title: "删除归档会话",
+      body: `“${app.jobTitle(session)}”会从归档中永久删除，附件和生成文件也会一起清理。`,
+      confirmLabel: "删除",
+      cancelLabel: "取消",
+      tone: "danger"
+    });
+    if (!confirmed) return;
+
+    try {
+      await app.apiPost(`/api/codex/sessions/${encodeURIComponent(session.id)}/delete`, {});
+      app.toast("已删除");
+      if (session.id === state.selectedCodexJobId) {
+        state.selectedCodexJobId = "";
+        state.selectedCodexSession = null;
+        app.closeCodexSessionStream();
+        app.applyRuntimeDraft(state.runtimePreferences, { persist: false, dirty: false });
+        app.renderEmptySessionDetail({ title: "归档", body: "这个归档会话已删除。" });
       }
       await app.loadCodexJobs();
     } catch (error) {
@@ -495,7 +675,7 @@ export function installSessions(app) {
 
   app.statusLabel = function statusLabel(status) {
     return {
-      queued: "排队中",
+      queued: "等待桌面",
       starting: "启动中",
       active: "可继续",
       running: "运行中",
@@ -549,7 +729,8 @@ export function installSessions(app) {
         dirty: false
       });
     }
-    const errorText = app.humanizeCodexError(job.error || job.lastError);
+    app.restoreComposerMode?.({ includeSession: true });
+    const errorText = app.conversationErrorText(job);
     const timeline = app.buildConversationTimeline(job, errorText);
     const renderSignature = app.sessionRenderSignature(job, errorText, timeline);
     const canSkipDetailRender =
@@ -689,9 +870,14 @@ export function installSessions(app) {
   };
 
   app.queueCodexSessionStreamRender = function queueCodexSessionStreamRender(session, options = {}) {
+    if (!session?.id) return;
+    const pending = state.pendingSessionStreamRender;
+    const pendingBase = pending?.session?.id === session.id ? pending.session : null;
+    const selectedBase = state.selectedCodexSession?.id === session.id ? state.selectedCodexSession : null;
+    const nextSession = options.partial ? app.mergeCodexSessionStreamUpdate(pendingBase || selectedBase, session) : session;
     state.pendingSessionStreamRender = {
-      session,
-      partial: Boolean(options.partial)
+      session: nextSession,
+      partial: false
     };
     if (state.sessionStreamRenderFrame) return;
 
@@ -699,9 +885,7 @@ export function installSessions(app) {
       state.sessionStreamRenderFrame = 0;
       const pending = state.pendingSessionStreamRender;
       state.pendingSessionStreamRender = null;
-      const nextSession = pending?.partial
-        ? app.mergeCodexSessionStreamUpdate(state.selectedCodexSession, pending.session)
-        : pending?.session;
+      const nextSession = pending?.session;
       if (!nextSession?.id || nextSession.id !== state.selectedCodexJobId) return;
       app.renderCodexJob(nextSession, { keepSelection: true, scrollToBottom: false });
       if (!app.sessionHasPendingWork(nextSession)) app.scheduleSessionListRefresh();
@@ -783,7 +967,7 @@ export function installSessions(app) {
     const delayMs = Math.max(0, Number(options.delayMs ?? 1200) || 0);
     state.sessionListRefreshTimer = windowRef.setTimeout(() => {
       state.sessionListRefreshTimer = null;
-      if (app.isLoggedIn() && state.token) {
+      if (app.canUseWorkbench?.()) {
         app.loadCodexJobs({ skipSelectedDetailLoad: Boolean(state.sessionEventSourceId || state.sessionEventReconnectTimer) }).catch((error) => {
           if (!app.handleAuthError(error, "当前配对已失效，请重新扫描桌面端二维码。")) {
             app.markCodexConnectionProblem?.("连接中断，当前会话已保留。");
@@ -863,6 +1047,8 @@ export function installSessions(app) {
     state.contextUsageDetailsOpen = false;
     app.renderSessionStatusRail(null);
     app.refreshContextUsageIndicator?.();
+    app.restoreComposerMode?.({ includeSession: false });
+    app.updateComposerAvailability?.();
     elements.runLog.hidden = true;
     elements.codexLog.textContent = "";
     elements.codexRunSummary.innerHTML = `
@@ -881,7 +1067,7 @@ export function installSessions(app) {
   app.renderApprovals = function renderApprovals(session) {
     const approvals = session.approvals || [];
     const interactions = session.interactions || [];
-    elements.codexApprovals.hidden = approvals.length === 0 && interactions.length === 0;
+    elements.codexApprovals.hidden = true;
     elements.codexApprovals.innerHTML = "";
     for (const approval of approvals) {
       const node = document.createElement("div");
@@ -908,11 +1094,22 @@ export function installSessions(app) {
       for (const button of node.querySelectorAll("button")) {
         button.addEventListener("click", () => app.decideApproval(session.id, approval.id, button.dataset.decision));
       }
-      elements.codexApprovals.append(node);
+      app.appendTranscriptDecisionNode("approval", approval.id, node);
     }
     for (const interaction of interactions) {
-      elements.codexApprovals.append(app.renderInteractionCard(session, interaction));
+      app.appendTranscriptDecisionNode("interaction", interaction.id, app.renderInteractionCard(session, interaction));
     }
+  };
+
+  app.appendTranscriptDecisionNode = function appendTranscriptDecisionNode(type, id, node) {
+    const targets = elements.codexRunSummary?.querySelectorAll?.(`[data-transcript-decision="${type}"]`) || [];
+    const target = [...targets].find((candidate) => String(candidate.dataset?.decisionId || "") === String(id || ""));
+    if (target) {
+      target.append(node);
+      return;
+    }
+    elements.codexApprovals.hidden = false;
+    elements.codexApprovals.append(node);
   };
 
   app.decideApproval = async function decideApproval(sessionId, approvalId, decision) {
@@ -956,10 +1153,11 @@ export function installSessions(app) {
     const node = document.createElement("div");
     node.className = "approval-inline-card thread-decision-card interaction-inline-card";
     const questions = app.interactionQuestions(interaction);
+    const hasStructuredQuestions = Array.isArray(interaction.payload?.questions) && interaction.payload.questions.length > 0;
     node.innerHTML = `
       <div class="approval-inline-copy">
         <span class="thread-status-pill warn">${app.escapeHtml(app.interactionTitle(session, interaction))}</span>
-        <p>${app.escapeHtml(interaction.prompt || `${app.conversationAssistantRoleLabel(session)} 需要你的输入`)}</p>
+        ${hasStructuredQuestions ? "" : `<p>${app.escapeHtml(interaction.prompt || `${app.conversationAssistantRoleLabel(session)} 需要你的输入`)}</p>`}
       </div>
       <form class="interaction-form">
         <div class="interaction-questions">
@@ -1130,28 +1328,6 @@ export function installSessions(app) {
     }
   };
 
-  app.refreshTurnActivityLine = function refreshTurnActivityLine() {
-    if (!elements.turnActivityLine || !elements.turnActivityText) return;
-    if (!state.turnActivityDetailsOpen) {
-      app.hideTurnActivityLine();
-      return;
-    }
-
-    const activity = app.turnActivityForSession(state.composingNewSession ? null : state.selectedCodexSession);
-    if (!activity) {
-      state.turnActivityDetailsOpen = false;
-      app.refreshTurnActivityToggle?.(state.composingNewSession ? null : state.selectedCodexSession);
-      app.hideTurnActivityLine();
-      return;
-    }
-
-    elements.turnActivityLine.hidden = false;
-    elements.turnActivityLine.dataset.state = activity.state || "running";
-    elements.turnActivityLine.title = activity.title || activity.text;
-    elements.turnActivityText.textContent = activity.text;
-    app.syncComposerMetrics?.();
-  };
-
   app.runningSessionStatusText = function runningSessionStatusText(session) {
     const agent = app.conversationAssistantRoleLabel(session);
     const quietInfo = app.runningSessionQuietInfo(session);
@@ -1201,33 +1377,6 @@ export function installSessions(app) {
     return `${hours} 小时`;
   };
 
-  app.hideTurnActivityLine = function hideTurnActivityLine() {
-    if (elements.turnActivityLine.hidden && !elements.turnActivityText.textContent && !elements.turnActivityLine.dataset.state) return;
-    elements.turnActivityLine.hidden = true;
-    elements.turnActivityLine.dataset.state = "";
-    elements.turnActivityLine.removeAttribute("title");
-    elements.turnActivityText.textContent = "";
-    app.syncComposerMetrics?.();
-  };
-
-  app.toggleTurnActivityDetails = function toggleTurnActivityDetails() {
-    const session = state.composingNewSession ? null : state.selectedCodexSession;
-    if (!app.turnActivityAvailable(session)) return;
-    state.turnActivityDetailsOpen = !state.turnActivityDetailsOpen;
-    app.refreshTurnActivityToggle(session);
-    app.refreshTurnActivityLine();
-  };
-
-  app.refreshTurnActivityToggle = function refreshTurnActivityToggle(session = null, status = "") {
-    if (!elements.composerStatusText) return;
-    const available = app.turnActivityAvailable(session);
-    if (!available) state.turnActivityDetailsOpen = false;
-    elements.composerStatusText.disabled = !available;
-    elements.composerStatusText.classList.toggle("is-clickable", available);
-    elements.composerStatusText.setAttribute("aria-expanded", available && state.turnActivityDetailsOpen ? "true" : "false");
-    elements.composerStatusText.setAttribute("title", available ? "查看运行详情" : status || "");
-  };
-
   app.turnActivityAvailable = function turnActivityAvailable(session) {
     const commandCounts = app.sessionCommandCounts(session);
     return Boolean(
@@ -1248,15 +1397,15 @@ export function installSessions(app) {
       return { state: "queued", text: "正在中断", title: "取消请求已发送到桌面端" };
     }
 
-    const commandActivity = app.latestCommandActivity(session.events || [], session);
     const quietInfo = app.runningSessionQuietInfo(session);
-    if (commandActivity && !(quietInfo?.quiet && commandActivity.state === "completed")) return commandActivity;
     if (Number(session.pendingInteractionCount || 0) > 0) {
       return { state: "approval", text: "等待选择", title: `等待你回答 ${agent} 的结构化问题` };
     }
     if (Number(session.pendingApprovalCount || 0) > 0) {
       return { state: "approval", text: "等待审批", title: `等待你在手机上批准 ${agent} 请求` };
     }
+    const queueBlockerActivity = app.queueBlockerActivity(session);
+    if (queueBlockerActivity) return queueBlockerActivity;
     if (commandCounts.queued > 0 || session.status === "queued") {
       return { state: "queued", text: "等待桌面接收任务", title: "任务已进入桌面端队列" };
     }
@@ -1313,91 +1462,23 @@ export function installSessions(app) {
     return { pending, queued: pending, leased: 0 };
   };
 
-  app.latestCommandActivity = function latestCommandActivity(events, session = null) {
-    const agent = app.conversationAssistantRoleLabel(session);
-    let latestOutput = "";
-    for (const event of [...events].reverse()) {
-      const raw = event.raw || {};
-      const method = raw.method || event.type || "";
-      const params = raw.params || {};
+  app.queueBlockerActivity = function queueBlockerActivity(session) {
+    const blocker = session?.queueBlocker && typeof session.queueBlocker === "object" ? session.queueBlocker : null;
+    if (!blocker || blocker.type !== "project_busy") return null;
 
-      if (app.isCommandOutputEvent(method)) {
-        latestOutput ||= app.activityOutputSnippet(event.text || params.delta || "");
-        continue;
-      }
-
-      if (method === "item/commandExecution/requestApproval") {
-        const commandText = app.commandDisplayText(params.command);
-        return {
-          state: "approval",
-          text: app.compactActivityText(`等待审批 ${commandText}`),
-          title: commandText
-        };
-      }
-
-      if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") {
-        return {
-          state: "approval",
-          text: "等待选择",
-          title: `${agent} 正在等待你的选择`
-        };
-      }
-
-      const item = params.item || {};
-      if (item.type !== "commandExecution") continue;
-      const commandText = app.commandDisplayText(item.command);
-      const status = String(item.status || (method === "item/completed" ? "completed" : "running")).toLowerCase();
-      const output = latestOutput || app.activityOutputSnippet(item.aggregatedOutput || "");
-      const prefix = app.commandActivityPrefix(status, method);
-      const text = output ? `${prefix} ${commandText} · ${output}` : `${prefix} ${commandText}`;
-      return {
-        state: app.commandActivityState(status, method),
-        text: app.compactActivityText(text),
-        title: output ? `${commandText}\n${output}` : commandText
-      };
-    }
-    if (latestOutput) {
-      return {
-        state: "running",
-        text: app.compactActivityText(`输出 ${latestOutput}`),
-        title: latestOutput
-      };
-    }
-    return null;
-  };
-
-  app.isCommandOutputEvent = function isCommandOutputEvent(method) {
-    return method === "command/exec/outputDelta" || method === "item/commandExecution/outputDelta";
+    const title = String(blocker.blockedByTitle || "").trim();
+    return {
+      state: "queued",
+      text: "等待同工程任务完成",
+      title: title
+        ? `同一工程的主工作目录正在处理「${title}」，当前任务会在它结束后继续。`
+        : "同一工程的主工作目录正在处理另一条任务，当前任务会在它结束后继续。"
+    };
   };
 
   app.commandDisplayText = function commandDisplayText(command) {
     const text = Array.isArray(command) ? command.join(" ") : String(command || "后台命令");
     return app.compactActivityText(text.replace(/\s+/g, " ").trim() || "后台命令", 96);
-  };
-
-  app.commandActivityPrefix = function commandActivityPrefix(status, method) {
-    if (status.includes("fail") || status.includes("error")) return "命令失败";
-    if (status.includes("cancel")) return "已取消";
-    if (status.includes("complete") || status.includes("success") || status.includes("succeed")) return "已完成";
-    return method === "item/completed" ? "已完成" : "正在运行";
-  };
-
-  app.commandActivityState = function commandActivityState(status, method) {
-    if (status.includes("fail") || status.includes("error")) return "failed";
-    if (status.includes("cancel")) return "idle";
-    if (status.includes("complete") || status.includes("success") || status.includes("succeed") || method === "item/completed") {
-      return "completed";
-    }
-    return "running";
-  };
-
-  app.activityOutputSnippet = function activityOutputSnippet(value) {
-    const lines = String(value || "")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const latestLine = lines.at(-1) || "";
-    return app.compactActivityText(app.redactActivityText(latestLine), 72);
   };
 
   app.redactActivityText = function redactActivityText(value) {
@@ -1438,6 +1519,7 @@ export function installSessions(app) {
         body: entry.body || "",
         at: entry.at || "",
         draft: Boolean(entry.draft),
+        parts: (entry.parts || []).map((part) => ({ ...part })),
         attachments: (entry.attachments || []).map((attachment) => ({
           type: attachment?.type || "",
           name: attachment?.name || "",
@@ -1485,7 +1567,14 @@ export function installSessions(app) {
       const renderedAssistantTexts = new Set();
       for (const message of messages) {
         const attachments = app.messageAttachments(message);
-        const text = app.conversationDisplayText(message.text, { role: message.role, attachments });
+        const partText = Array.isArray(message.parts)
+          ? message.parts
+              .filter((part) => part?.type === "text")
+              .map((part) => String(part.text || ""))
+              .filter(Boolean)
+              .join("\n\n")
+          : "";
+        const text = app.conversationDisplayText(message.text || partText, { role: message.role, attachments });
         if (!text && attachments.length === 0) continue;
         if (message.role !== "assistant") {
           if (message.externalKey) renderedUserKeys.add(message.externalKey);
@@ -1500,6 +1589,7 @@ export function installSessions(app) {
           role: message.role === "assistant" ? "assistant" : "user",
           roleLabel: message.role === "assistant" ? assistantRoleLabel : "",
           text,
+          parts: app.normalizeTranscriptParts(message.parts, { text, role: message.role }),
           attachments,
           at: message.createdAt || job.updatedAt || job.createdAt || "",
           externalKey: message.externalKey || ""
@@ -1617,11 +1707,154 @@ export function installSessions(app) {
       });
     }
 
+    for (const entry of timeline) app.ensureTimelineEntryParts(entry);
+    app.groupConsecutiveToolTimelineEntries(timeline);
+
     return timeline;
   };
 
+  app.conversationErrorText = function conversationErrorText(job = {}) {
+    const error = String(job.error || job.lastError || "").trim();
+    if (!error || app.isRestartLifecycleDiagnostic(error)) return "";
+    return app.humanizeCodexError(error);
+  };
+
+  app.isRestartLifecycleDiagnostic = function isRestartLifecycleDiagnostic(error = "") {
+    return /^(Desktop agent did not reconnect within the restart timeout\.|Desktop agent did not finish draining before the restart timeout\.|Desktop agent restart request was not armed before the checkpoint timeout\.|Restarted desktop agent .*revision|Restarted desktop agent did not advertise a source revision\.)$/i.test(String(error).trim());
+  };
+
+  app.groupConsecutiveToolTimelineEntries = function groupConsecutiveToolTimelineEntries(timeline) {
+    const entries = Array.isArray(timeline) ? timeline : [];
+    const grouped = [];
+    let pending = [];
+    const flush = () => {
+      if (pending.length === 1) grouped.push(pending[0]);
+      if (pending.length > 1) {
+        grouped.push({
+          kind: "tool-group",
+          parts: pending.flatMap((entry) => entry.parts || []),
+          at: pending[0].at || "",
+          endedAt: pending.at(-1)?.at || "",
+          eventId: pending[0].eventId || 0
+        });
+      }
+      pending = [];
+    };
+    for (const entry of entries) {
+      const parts = Array.isArray(entry?.parts) ? entry.parts : [];
+      const isToolEntry = parts.length > 0 && parts.every((part) => ["command", "file-change", "test-result"].includes(part.type));
+      if (isToolEntry) {
+        pending.push(entry);
+        continue;
+      }
+      flush();
+      grouped.push(entry);
+    }
+    flush();
+    entries.splice(0, entries.length, ...grouped);
+    return entries;
+  };
+
+  app.ensureTimelineEntryParts = function ensureTimelineEntryParts(entry) {
+    if (!entry || (Array.isArray(entry.parts) && entry.parts.length > 0)) return entry;
+    if (entry.kind === "message") {
+      entry.parts = entry.text ? [{ type: "text", text: entry.text, draft: Boolean(entry.draft) }] : [];
+    } else if (entry.kind === "plan") {
+      entry.parts = [{ type: "status", label: "计划", detail: entry.text || "", status: "info" }];
+    } else if (entry.kind === "system") {
+      entry.parts = [{ type: "status", label: entry.text || "", status: "info" }];
+    } else if (entry.kind === "test") {
+      entry.parts = [{
+        type: "test-result",
+        level: entry.level,
+        status: entry.status,
+        command: entry.command,
+        failures: entry.failures || [],
+        outputArtifact: entry.outputArtifact || null
+      }];
+    }
+    return entry;
+  };
+
+  app.normalizeTranscriptParts = function normalizeTranscriptParts(parts, options = {}) {
+    if (!Array.isArray(parts) || parts.length === 0) return [];
+    const normalized = parts
+      .map((part) => app.normalizeTranscriptPart(part))
+      .filter((part) => part && part.type !== "git-summary")
+      .slice(0, 50);
+    if (!normalized.some((part) => part.type === "text") && options.text) {
+      normalized.unshift({ type: "text", text: String(options.text), draft: false });
+    }
+    return normalized;
+  };
+
+  app.normalizeTranscriptPart = function normalizeTranscriptPart(part) {
+    if (!part || typeof part !== "object") return null;
+    const type = String(part.type || "");
+    if (type === "text") return { type, text: String(part.text || "").slice(0, 12000), draft: Boolean(part.draft) };
+    if (type === "command") {
+      return {
+        type,
+        command: app.compactActivityText(part.command, 1000),
+        status: app.transcriptExecutionStatus(part.status),
+        output: app.boundedTranscriptOutput(part.output),
+        outputArtifact: app.normalizeTranscriptArtifact(part.outputArtifact)
+      };
+    }
+    if (type === "file-change") {
+      return {
+        type,
+        status: app.transcriptExecutionStatus(part.status),
+        changes: app.normalizeTranscriptFileChanges(part.changes)
+      };
+    }
+    if (type === "test-result") {
+      return {
+        type,
+        level: String(part.level || "quick").slice(0, 80),
+        status: String(part.status || "completed").slice(0, 80),
+        command: app.compactActivityText(part.command, 1000),
+        failures: (Array.isArray(part.failures) ? part.failures : []).map((failure) => String(failure).slice(0, 1000)).slice(0, 5),
+        outputArtifact: app.normalizeTranscriptArtifact(part.outputArtifact)
+      };
+    }
+    if (type === "git-summary") {
+      return {
+        type,
+        branch: String(part.branch || "").slice(0, 300),
+        commit: String(part.commit || "").slice(0, 80),
+        changedFiles: (Array.isArray(part.changedFiles) ? part.changedFiles : []).map((path) => String(path).slice(0, 1000)).slice(0, 20),
+        changedFileCount: Math.max(0, Number(part.changedFileCount || 0) || 0),
+        commitChanged: Boolean(part.commitChanged),
+        commitBefore: String(part.commitBefore || "").slice(0, 80),
+        commitAfter: String(part.commitAfter || "").slice(0, 80)
+      };
+    }
+    if (type === "approval" || type === "interaction") {
+      return { type, id: String(part.id || "").slice(0, 200), status: String(part.status || "pending").slice(0, 80) };
+    }
+    if (type === "status") {
+      return {
+        type,
+        label: String(part.label || "状态").slice(0, 300),
+        detail: String(part.detail || "").slice(0, 2000),
+        status: String(part.status || "info").slice(0, 80)
+      };
+    }
+    return null;
+  };
+
+  app.normalizeTranscriptArtifact = function normalizeTranscriptArtifact(artifact) {
+    if (!artifact || typeof artifact !== "object") return null;
+    return {
+      id: String(artifact.id || "").slice(0, 200),
+      label: String(artifact.label || "").slice(0, 300),
+      downloadPath: String(artifact.downloadPath || "").slice(0, 2000)
+    };
+  };
+
   app.mergeAssistantTimelineAttachments = function mergeAssistantTimelineAttachments(timeline, entry) {
-    const incoming = app.dedupeConversationImageAttachments(entry?.attachments || []);
+    const incoming = app.dedupeConversationAttachments(entry?.attachments || []);
     if (!incoming.length) return false;
     const entries = Array.isArray(timeline) ? timeline : [];
     const externalKey = String(entry?.externalKey || "").trim();
@@ -1634,7 +1867,7 @@ export function installSessions(app) {
         .reverse()
         .find((item) => item?.kind === "message" && item.role === "assistant" && text && String(item.text || "").trim() === text);
     if (!target) return false;
-    target.attachments = app.dedupeConversationImageAttachments([...(target.attachments || []), ...incoming]);
+    target.attachments = app.dedupeConversationAttachments([...(target.attachments || []), ...incoming]);
     return true;
   };
 
@@ -1642,12 +1875,29 @@ export function installSessions(app) {
     const seenPlans = new Set(timeline.filter((entry) => entry.kind === "plan").map((entry) => entry.text));
     const seenSystem = new Set();
     const seenTests = new Set();
+    const latestItemParts = new Map();
     const latestPlanByTurn = new Map();
 
     for (const event of job.events || []) {
       const plan = app.planEntryFromEvent(event);
       if (plan?.text) latestPlanByTurn.set(plan.turnId || plan.text, plan);
     }
+
+
+    for (const event of job.events || []) {
+      const part = app.transcriptPartFromEvent(event);
+      if (!part) continue;
+      const key = part.itemId ? `${part.type}:${part.itemId}` : `${part.type}:${event.id || event.at || timeline.length}`;
+      latestItemParts.set(key, {
+        kind: "part",
+        text: part.text || "",
+        parts: [part],
+        at: event.at || "",
+        eventId: Number(event.id || 0) || 0
+      });
+    }
+
+    timeline.push(...latestItemParts.values());
 
     for (const plan of latestPlanByTurn.values()) {
       if (seenPlans.has(plan.text)) continue;
@@ -1674,6 +1924,74 @@ export function installSessions(app) {
       seenTests.add(key);
       timeline.push(testSummary);
     }
+
+    for (const approval of job.approvals || []) {
+      timeline.push({
+        kind: "part",
+        parts: [{ type: "approval", id: approval.id, status: approval.status || "pending" }],
+        at: approval.createdAt || job.updatedAt || ""
+      });
+    }
+
+    for (const interaction of job.interactions || []) {
+      timeline.push({
+        kind: "part",
+        parts: [{ type: "interaction", id: interaction.id, status: interaction.status || "pending" }],
+        at: interaction.createdAt || job.updatedAt || ""
+      });
+    }
+  };
+
+  app.transcriptPartFromEvent = function transcriptPartFromEvent(event) {
+    const raw = event?.raw || {};
+    const method = raw.method || event?.type || "";
+    const item = raw.params?.item || {};
+    if ((method === "item/started" || method === "item/completed") && item.type === "commandExecution") {
+      const status = app.transcriptExecutionStatus(item.status, method);
+      return {
+        type: "command",
+        itemId: String(item.id || ""),
+        command: app.commandDisplayText(item.command),
+        status,
+        output: app.boundedTranscriptOutput(item.aggregatedOutput || event.text || ""),
+        outputArtifact: item.outputArtifact || null
+      };
+    }
+    if ((method === "item/started" || method === "item/completed") && item.type === "fileChange") {
+      return {
+        type: "file-change",
+        itemId: String(item.id || ""),
+        status: app.transcriptExecutionStatus(item.status, method),
+        changes: app.normalizeTranscriptFileChanges(item.changes || item.files || [])
+      };
+    }
+    return null;
+  };
+
+  app.transcriptExecutionStatus = function transcriptExecutionStatus(value, method = "") {
+    const status = String(value || "").toLowerCase();
+    if (status.includes("fail") || status.includes("error")) return "failed";
+    if (status.includes("cancel")) return "cancelled";
+    if (status.includes("success") || status.includes("complete") || method === "item/completed") return "succeeded";
+    return "running";
+  };
+
+  app.boundedTranscriptOutput = function boundedTranscriptOutput(value, limit = 1200) {
+    const text = app.redactActivityText(String(value || "").trim());
+    return text.length > limit ? `…${text.slice(-limit)}` : text;
+  };
+
+  app.normalizeTranscriptFileChanges = function normalizeTranscriptFileChanges(changes) {
+    return (Array.isArray(changes) ? changes : [])
+      .map((change) => {
+        if (typeof change === "string") return { path: change, changeType: "modified" };
+        return {
+          path: String(change?.path || change?.file || ""),
+          changeType: String(change?.changeType || change?.kind || change?.type || "modified")
+        };
+      })
+      .filter((change) => change.path)
+      .slice(0, 20);
   };
 
   app.sortTimelineEntries = function sortTimelineEntries(timeline) {
@@ -1925,28 +2243,85 @@ export function installSessions(app) {
     rail.dataset.gitState = entry?.gitState || "";
     rail.dataset.hasCoreState = entry ? "true" : "false";
     rail.title = entry?.title || "";
+    const gitDetailsOpen = Boolean(entry?.gitSummary && state.gitDetailsOpenSessionId === session?.id);
     rail.innerHTML = `
-      ${
-        entry
-          ? `
-            <span class="session-status-dot" aria-hidden="true"></span>
-            <span class="session-status-mode">${app.escapeHtml(entry.modeLabel)}</span>
-            <span class="session-status-git">${app.escapeHtml(entry.gitLabel)}</span>
-            ${entry.healthLabel ? `<span class="session-status-health">${app.escapeHtml(entry.healthLabel)}</span>` : ""}
-            ${entry.refText ? `<span class="session-status-ref">${app.escapeHtml(entry.refText)}</span>` : ""}
-          `
-          : ""
-      }
-      ${worktreeActions}
+      <div class="session-status-primary">
+        ${
+          entry
+            ? `
+              <span class="session-status-dot" aria-hidden="true"></span>
+              <span class="session-status-mode">${app.escapeHtml(entry.modeLabel)}</span>
+              <button class="session-status-git" type="button" data-git-details-toggle aria-expanded="${gitDetailsOpen}"${
+                entry.gitSummary ? "" : " disabled"
+              }>
+                <span>${app.escapeHtml(entry.gitLabel)}</span>
+                ${entry.gitSummary ? '<span class="session-status-chevron" aria-hidden="true"></span>' : ""}
+              </button>
+              ${entry.healthLabel ? `<span class="session-status-health">${app.escapeHtml(entry.healthLabel)}</span>` : ""}
+              ${entry.refText ? `<span class="session-status-ref">${app.escapeHtml(entry.refText)}</span>` : ""}
+            `
+            : ""
+        }
+        ${worktreeActions}
+      </div>
+      ${gitDetailsOpen ? app.renderSessionGitDetails(entry.gitSummary) : ""}
+    `;
+  };
+
+  app.renderSessionGitDetails = function renderSessionGitDetails(summary = {}) {
+    const turnChanges = summary.changedDuringTurn && typeof summary.changedDuringTurn === "object" ? summary.changedDuringTurn : {};
+    const workspaceFiles = Array.isArray(summary.changedFiles) ? summary.changedFiles.map(String) : [];
+    const turnFiles = Array.isArray(turnChanges.changedFiles) ? turnChanges.changedFiles.map(String) : [];
+    const workspaceCount = Math.max(0, Number(summary.changedFileCount ?? workspaceFiles.length) || 0);
+    const turnCount = Math.max(0, Number(turnChanges.changedFileCount ?? turnFiles.length) || 0);
+    const files = turnFiles.length ? turnFiles : workspaceFiles;
+    const shownFiles = files.slice(0, 12);
+    const hiddenCount = Math.max(0, (turnFiles.length ? turnCount : workspaceCount) - shownFiles.length);
+    const branch = String(summary.branch || "").trim();
+    const commit = app.shortCommit(summary.commit || "");
+    const ref = [branch, commit].filter(Boolean).join(" @ ");
+    const turnLabel = turnCount > 0 ? `本轮改动 ${turnCount} 个文件` : "本轮未产生 Git 改动";
+    return `
+      <section class="session-git-details" aria-label="Git 详情">
+        <div class="session-git-details-head">
+          <strong>${app.escapeHtml(turnLabel)}</strong>
+          ${ref ? `<span class="session-status-ref">${app.escapeHtml(ref)}</span>` : ""}
+        </div>
+        ${
+          shownFiles.length
+            ? `<ul class="session-git-files">${shownFiles.map((path) => `<li>${app.escapeHtml(path)}</li>`).join("")}</ul>`
+            : '<p class="session-git-empty">工作区保持干净。</p>'
+        }
+        ${hiddenCount > 0 ? `<p class="session-git-more">另有 ${hiddenCount} 个文件</p>` : ""}
+        <p class="session-git-workspace">工作区${workspaceCount > 0 ? `共有 ${workspaceCount} 个未提交文件` : "无未提交改动"}</p>
+      </section>
     `;
   };
 
   app.renderWorktreeRailActions = function renderWorktreeRailActions(session, entry) {
-    if (!entry || entry.mode !== "worktree" || !app.canChangeWorktreeSession(session)) return "";
+    if (!entry || entry.mode !== "worktree" || session?.execution?.ownerType === "orchestration") return "";
+    const stateName = String(session?.execution?.lifecycleState || session?.execution?.cleanupState || "").trim().toLowerCase();
+    if (stateName === "unavailable") {
+      return `
+        <span class="session-status-worktree-actions">
+          <button class="session-status-action" type="button" data-worktree-recovery="main">改用主工作区</button>
+        </span>
+      `;
+    }
+    if (stateName === "failed" && session?.execution?.setupStatus === "failed") {
+      return `
+        <span class="session-status-worktree-actions">
+          <button class="session-status-action" type="button" data-worktree-action="setup">重试设置</button>
+          <button class="session-status-action session-status-action-danger" type="button" data-worktree-action="discard">丢弃</button>
+        </span>
+      `;
+    }
+    if (!app.canChangeWorktreeSession(session)) return "";
     const disabled = app.sessionHasPendingWork(session) ? " disabled" : "";
+    const applyLabel = stateName === "apply-blocked" ? "修复后重试" : "应用";
     return `
       <span class="session-status-worktree-actions">
-        <button class="session-status-action" type="button" data-worktree-action="apply"${disabled}>应用</button>
+        <button class="session-status-action" type="button" data-worktree-action="apply"${disabled}>${applyLabel}</button>
         <button class="session-status-action session-status-action-danger" type="button" data-worktree-action="discard"${disabled}>丢弃</button>
       </span>
     `;
@@ -1954,6 +2329,25 @@ export function installSessions(app) {
 
   app.handleSessionStatusRailAction = function handleSessionStatusRailAction(event) {
     const target = event.target instanceof Element ? event.target : null;
+    const gitToggle = target?.closest("[data-git-details-toggle]");
+    if (gitToggle && elements.sessionStatusRail.contains(gitToggle)) {
+      event.stopPropagation();
+      event.preventDefault();
+      const session = state.selectedCodexSession;
+      if (!session?.id) return;
+      state.gitDetailsOpenSessionId = state.gitDetailsOpenSessionId === session.id ? "" : session.id;
+      app.renderSessionStatusRail(session);
+      return;
+    }
+    const recoveryButton = target?.closest("[data-worktree-recovery]");
+    if (recoveryButton && elements.sessionStatusRail.contains(recoveryButton)) {
+      event.stopPropagation();
+      event.preventDefault();
+      app.applyWorktreeModePreference(false);
+      app.startNewCodexSession();
+      app.toast("已新建主工作区任务，请确认内容后发送");
+      return;
+    }
     const worktreeButton = target?.closest("[data-worktree-action]");
     if (worktreeButton && elements.sessionStatusRail.contains(worktreeButton)) {
       event.stopPropagation();
@@ -1967,6 +2361,28 @@ export function installSessions(app) {
 
   app.sessionStatusRailEntry = function sessionStatusRailEntry(session) {
     if (!session?.id) return null;
+
+    const restart = session.restartOperation || {};
+    if (["requested", "restarting", "resuming", "failed"].includes(restart.status)) {
+      const labels = {
+        requested: ["准备重启", "状态已保存"],
+        restarting: ["正在重启", "等待新实例上线"],
+        resuming: ["已重新连接", "正在恢复对话"],
+        failed: ["重启未验证", "Agent 可能已恢复，请查看诊断"]
+      };
+      const [gitLabel, healthLabel] = labels[restart.status];
+      const revision = app.shortCommit(restart.actualRevision || restart.expectedRevision || "");
+      return {
+        mode: "restart",
+        gitState: restart.status === "failed" ? "failed" : "pending",
+        modeLabel: "桌面 Agent",
+        gitLabel,
+        healthLabel,
+        refText: revision,
+        gitSummary: null,
+        title: [gitLabel, healthLabel, restart.error, revision].filter(Boolean).join("\n")
+      };
+    }
 
     const execution = session.execution || {};
     const latestGitEvent = app.latestGitSummaryEvent(session.events || []);
@@ -1983,23 +2399,48 @@ export function installSessions(app) {
     const branch = String(summary.branch || execution.branchName || "").trim();
     const commit = app.shortCommit(summary.commit || execution.baseCommit || "");
     const refText = [branch, commit].filter(Boolean).join(" @ ");
+    const lifecycleLabel = app.worktreeLifecycleLabel(execution);
     const gitLabel = Number.isFinite(changedFileCount)
       ? changedFileCount > 0
         ? `Git 变更 ${changedFileCount}`
         : "Git 无变更"
       : app.sessionStatusGitPendingLabel(session);
     const modeLabel = inWorktree ? "隔离 worktree" : "主工作区";
-    const title = [modeLabel, refText, execution.path || summary.root || ""].filter(Boolean).join("\n");
+    const errorSummary = String(execution.errorSummary || "").trim();
+    const title = [modeLabel, lifecycleLabel, errorSummary, refText].filter(Boolean).join("\n");
 
     return {
       mode: inWorktree ? "worktree" : "workspace",
       gitState: Number.isFinite(changedFileCount) && changedFileCount > 0 ? "dirty" : Number.isFinite(changedFileCount) ? "clean" : "pending",
       modeLabel,
       gitLabel,
-      healthLabel: "",
+      healthLabel: lifecycleLabel,
       refText,
+      gitSummary: latestGitEvent ? summary : null,
       title
     };
+  };
+
+  app.worktreeLifecycleLabel = function worktreeLifecycleLabel(execution = {}) {
+    const state = String(execution.lifecycleState || execution.cleanupState || "").trim().toLowerCase();
+    const labels = {
+      creating: "创建中",
+      "setting-up": "设置中",
+      ready: execution.reused ? "复用中" : "已就绪",
+      running: "运行中",
+      completed: "已完成",
+      failed: "失败",
+      applied: "已应用",
+      discarded: "已丢弃",
+      "cleanup-pending": "待清理",
+      unavailable: "不可用",
+      "apply-blocked": "应用受阻",
+      "cleanup-failed": "清理失败"
+    };
+    if (labels[state]) return labels[state];
+    if (execution.discardedAt || execution.cleanupState === "discarded") return "已丢弃";
+    if (execution.appliedAt || execution.cleanupState === "applied") return "已应用";
+    return "";
   };
 
   app.canChangeWorktreeSession = function canChangeWorktreeSession(session) {
@@ -2007,7 +2448,9 @@ export function installSessions(app) {
     return Boolean(
       session?.id &&
         execution.mode === "worktree" &&
-        execution.path &&
+        execution.ownerType !== "orchestration" &&
+        !["applied", "discarded", "unavailable", "cleanup-failed", "cleanup-pending"].includes(String(execution.lifecycleState || "").trim().toLowerCase()) &&
+        execution.cleanupState !== "applied" &&
         execution.cleanupState !== "discarded" &&
         !session.archivedAt &&
         !["queued", "starting", "running", "cancelled", "closed", "stale"].includes(session.status)
@@ -2017,10 +2460,10 @@ export function installSessions(app) {
   app.requestWorktreeAction = async function requestWorktreeAction(action) {
     const session = state.selectedCodexSession;
     const normalized = String(action || "").trim().toLowerCase();
-    if (!session?.id || !["apply", "discard"].includes(normalized) || !app.canChangeWorktreeSession(session)) return;
+    if (!session?.id || !["setup", "apply", "discard"].includes(normalized) || !app.canChangeWorktreeSession(session)) return;
     const data = await app.apiPost(`/api/codex/sessions/${encodeURIComponent(session.id)}/worktree/${normalized}`, {});
     state.selectedCodexSession = data.session || session;
-    app.toast(normalized === "apply" ? "已请求应用 worktree" : "已请求丢弃 worktree");
+    app.toast(normalized === "apply" ? "已请求应用 worktree" : normalized === "setup" ? "已请求重新设置 worktree" : "已请求丢弃 worktree");
     app.renderCodexJob(state.selectedCodexSession, { keepSelection: true });
     app.scheduleSessionListRefresh?.({ delayMs: 250 });
   };
@@ -2080,6 +2523,7 @@ export function installSessions(app) {
   };
 
   app.renderConversationEntry = function renderConversationEntry(entry) {
+    app.ensureTimelineEntryParts(entry);
     if (entry.kind === "error") {
       return `
         <article class="thread-message thread-message-system">
@@ -2120,36 +2564,18 @@ export function installSessions(app) {
     }
 
     if (entry.kind === "test") {
-      const statusClass = entry.status === "failed" ? "warn" : "";
-      const artifact = entry.outputArtifact || {};
-      const artifactPath = app.authenticatedResourcePath(artifact.downloadPath || "");
-      return `
-        <article class="thread-message thread-message-system">
-          <div class="thread-plan-card thread-test-card">
-            <div class="thread-plan-card-head">
-              <span class="thread-status-pill">${app.escapeHtml(app.testLevelLabel(entry.level))}</span>
-              <span class="thread-status-pill ${app.escapeHtml(statusClass)}">${app.escapeHtml(app.testStatusLabel(entry.status))}</span>
-              ${entry.at ? `<span class="thread-message-time">${app.escapeHtml(app.formatMessageTime(entry.at))}</span>` : ""}
-            </div>
-            <div class="thread-test-command">${app.escapeHtml(entry.command)}</div>
-            ${
-              entry.failures?.length
-                ? `<div class="thread-test-failures">${entry.failures
-                    .slice(0, 5)
-                    .map((failure) => `<span>${app.escapeHtml(failure)}</span>`)
-                    .join("")}</div>`
-                : ""
-            }
-            ${
-              artifactPath
-                ? `<a class="thread-test-artifact" href="${app.escapeHtml(artifactPath)}" target="_blank" rel="noreferrer">${app.escapeHtml(
-                    artifact.label || "完整输出"
-                  )}</a>`
-                : ""
-            }
-          </div>
-        </article>
-      `;
+      return app.renderTranscriptPart(entry.parts[0], { at: entry.at });
+    }
+
+    if (entry.kind === "part") {
+      return (entry.parts || [])
+        .map((part) => app.renderTranscriptPart(part, { at: entry.at }))
+        .filter(Boolean)
+        .join("");
+    }
+
+    if (entry.kind === "tool-group") {
+      return app.renderToolTranscriptGroup(entry.parts || [], { at: entry.endedAt || entry.at, disclosureAt: entry.at });
     }
 
     const roleLabel = entry.role === "user" ? "你" : entry.roleLabel || app.conversationAssistantRoleLabel(state.selectedCodexSession || {});
@@ -2160,9 +2586,17 @@ export function installSessions(app) {
     const attachmentsHtml = app.renderConversationAttachments(entry.attachments || [], { role: entry.role });
     const actionsHtml = entry.text ? app.renderConversationActions() : "";
     const rawMessageId = entry.text ? app.rememberConversationRawMessage(entry) : "";
-    const renderedText = entry.text ? app.renderConversationMessageText(entry) : { html: "", rich: false };
+    const textPart = (entry.parts || []).find((part) => part.type === "text" && part.text);
+    const displayText = String(textPart?.text || entry.text || "");
+    const renderedText = displayText
+      ? app.renderConversationMessageText({ ...entry, text: displayText, draft: Boolean(textPart?.draft || entry.draft) })
+      : { html: "", rich: false };
     const richClass = renderedText.rich ? " rich-transcript" : "";
     const rawMessageAttr = rawMessageId ? ` data-raw-message-id="${app.escapeHtml(rawMessageId)}"` : "";
+    const structuredPartsHtml = (entry.parts || [])
+      .filter((part) => part.type !== "text")
+      .map((part) => app.renderTranscriptPart(part, { at: entry.at, role: entry.role }))
+      .join("");
 
     return `
       <article class="thread-message ${roleClass}"${rawMessageAttr}>
@@ -2171,10 +2605,11 @@ export function installSessions(app) {
           ${draftBadge}
           ${timeLabel ? `<span class="thread-message-time">${app.escapeHtml(timeLabel)}</span>` : ""}
         </div>
-        ${entry.text ? `<div class="thread-bubble ${bubbleClass}${richClass}">${renderedText.html}</div>` : ""}
+        ${displayText ? `<div class="thread-bubble ${bubbleClass}${richClass}">${renderedText.html}</div>` : ""}
         ${attachmentsHtml}
         ${actionsHtml}
       </article>
+      ${structuredPartsHtml}
     `;
   };
 
@@ -2184,6 +2619,205 @@ export function installSessions(app) {
     }
     const rendered = app.renderAgentMarkdown(entry.text, { draft: entry.draft });
     return { html: rendered.html, rich: !rendered.degraded };
+  };
+
+  app.renderTranscriptPart = function renderTranscriptPart(part, options = {}) {
+    if (!part || typeof part !== "object") return "";
+    if (part.type === "text") {
+      const rendered = app.renderConversationMessageText({
+        role: options.role || "assistant",
+        text: String(part.text || ""),
+        draft: Boolean(part.draft)
+      });
+      return `<div class="thread-bubble thread-bubble-assistant${rendered.rich ? " rich-transcript" : ""}">${rendered.html}</div>`;
+    }
+    if (part.type === "status") {
+      const detail = String(part.detail || "").trim();
+      return `
+        <div class="thread-status-row">
+          <span class="thread-status-pill">${app.escapeHtml(part.label || "状态")}</span>
+          ${detail ? `<span class="thread-part-status-detail">${app.escapeHtml(detail)}</span>` : ""}
+        </div>
+      `;
+    }
+    if (["command", "file-change", "test-result"].includes(part.type)) {
+      return app.renderToolTranscriptGroup([part], options);
+    }
+    if (part.type === "approval" || part.type === "interaction") {
+      return `
+        <article class="thread-message thread-message-system thread-decision-entry">
+          <div class="thread-decision-anchor" data-transcript-decision="${app.escapeHtml(part.type)}" data-decision-id="${app.escapeHtml(
+            part.id || ""
+          )}"></div>
+        </article>
+      `;
+    }
+    return "";
+  };
+
+  app.renderCommandTranscriptPart = function renderCommandTranscriptPart(part, options = {}) {
+    return app.renderToolTranscriptGroup([{ ...part, type: "command" }], options);
+  };
+
+  app.renderToolTranscriptGroup = function renderToolTranscriptGroup(parts, options = {}) {
+    const tools = (Array.isArray(parts) ? parts : []).filter((part) => ["command", "file-change", "test-result"].includes(part?.type));
+    if (!tools.length) return "";
+    const statuses = tools.map((part) => String(part.status || "succeeded").toLowerCase());
+    const status = statuses.includes("failed")
+      ? "failed"
+      : statuses.some((value) => value === "pending" || value === "running")
+        ? "running"
+        : statuses.includes("cancelled")
+          ? "cancelled"
+          : "succeeded";
+    const disclosureKey = app.toolDisclosureKey(tools, options);
+    return app.renderTranscriptDisclosure({
+      type: "tool-group",
+      label: tools.length === 1 ? app.toolTranscriptLabel(tools[0]) : `工具活动 ${tools.length} 项`,
+      status,
+      disclosureKey,
+      open: state.expandedToolDisclosureKeys?.has?.(disclosureKey),
+      at: options.at,
+      details: `<div class="thread-tool-group-list">${tools.map(app.renderToolTranscriptGroupItem).join("")}</div>`
+    });
+  };
+
+  app.toolTranscriptLabel = function toolTranscriptLabel(part = {}) {
+    if (part.type === "command") return "使用终端";
+    if (part.type === "file-change") {
+      const count = Array.isArray(part.changes) ? part.changes.length : 0;
+      return count ? `修改了 ${count} 个文件` : "修改文件";
+    }
+    if (part.type === "test-result") return `运行${app.testLevelLabel(part.level)}`;
+    return "工具活动";
+  };
+
+  app.toolDisclosureKey = function toolDisclosureKey(parts = [], options = {}) {
+    const sessionId = state.selectedCodexSession?.id || "session";
+    const identity = parts.slice(0, 1).map((part) => ({
+      type: part.type || "",
+      command: part.command || "",
+      paths: Array.isArray(part.changes) ? part.changes.map((change) => change.path || "") : [],
+      level: part.level || ""
+    }));
+    return `${sessionId}:${options.disclosureAt || options.at || ""}:${app.hashConversationText(JSON.stringify(identity))}`;
+  };
+
+  app.renderToolTranscriptGroupItem = function renderToolTranscriptGroupItem(part) {
+    const status = String(part.status || "succeeded");
+    let label = "工具活动";
+    let details = "";
+    let footer = "";
+    if (part.type === "command") {
+      label = "使用终端";
+      const output = String(part.output || "").trim();
+      details = `<code class="thread-part-command">${app.escapeHtml(part.command || "后台命令")}</code>${
+        output ? `<pre class="thread-part-output">${app.escapeHtml(output)}</pre>` : ""
+      }`;
+    } else if (part.type === "file-change") {
+      const changes = Array.isArray(part.changes) ? part.changes : [];
+      label = changes.length ? `修改了 ${changes.length} 个文件` : "修改文件";
+      details = changes.length
+        ? `<ul class="thread-part-files">${changes.slice(0, 20).map((change) => `<li><span>${app.escapeHtml(change.path || "")}</span><small>${app.escapeHtml(app.fileChangeTypeLabel(change.changeType))}</small></li>`).join("")}</ul>`
+        : `<span class="thread-part-empty">文件详情不可用</span>`;
+    } else if (part.type === "test-result") {
+      label = `运行${app.testLevelLabel(part.level)}`;
+      const failures = Array.isArray(part.failures) ? part.failures : [];
+      details = `<code class="thread-part-command">${app.escapeHtml(part.command || "检查")}</code>${
+        failures.length ? `<div class="thread-test-failures">${failures.slice(0, 5).map((failure) => `<span>${app.escapeHtml(failure)}</span>`).join("")}</div>` : ""
+      }`;
+    }
+    const artifact = part.outputArtifact || {};
+    const artifactPath = app.authenticatedResourcePath(artifact.downloadPath || "");
+    if (artifactPath) {
+      footer = `<a class="thread-test-artifact" href="${app.escapeHtml(artifactPath)}" target="_blank" rel="noreferrer">${app.escapeHtml(artifact.label || "完整输出")}</a>`;
+    }
+    return `
+      <section class="thread-tool-group-item" data-part-type="${app.escapeHtml(part.type)}">
+        <header class="thread-tool-group-item-head">
+          <span class="thread-part-label">${app.escapeHtml(label)}</span>
+          <span class="thread-part-state" data-state="${app.escapeHtml(status)}">${app.escapeHtml(app.transcriptStatusLabel(status))}</span>
+        </header>
+        ${details}
+        ${footer}
+      </section>
+    `;
+  };
+
+  app.renderFileChangeTranscriptPart = function renderFileChangeTranscriptPart(part, options = {}) {
+    return app.renderToolTranscriptGroup([{ ...part, type: "file-change" }], options);
+  };
+
+  app.renderTestTranscriptPart = function renderTestTranscriptPart(part, options = {}) {
+    return app.renderToolTranscriptGroup([{ ...part, type: "test-result" }], options);
+  };
+
+  app.renderTranscriptCard = function renderTranscriptCard({ type, label, status, statusLabel = "", at = "", body = "", details = "", footer = "" }) {
+    const normalizedStatus = String(status || "idle");
+    return `
+      <article class="thread-message thread-message-system">
+        <section class="thread-part-card thread-part-${app.escapeHtml(type || "status")}" data-part-type="${app.escapeHtml(type || "status")}">
+          <header class="thread-part-head">
+            <span class="thread-part-label">${app.escapeHtml(label || "状态")}</span>
+            <span class="thread-part-state" data-state="${app.escapeHtml(normalizedStatus)}">${app.escapeHtml(
+              statusLabel || app.transcriptStatusLabel(normalizedStatus)
+            )}</span>
+            ${at ? `<span class="thread-message-time">${app.escapeHtml(app.formatMessageTime(at))}</span>` : ""}
+          </header>
+          ${body ? `<div class="thread-part-body">${body}</div>` : ""}
+          ${details ? `<div class="thread-part-details">${details}</div>` : ""}
+          ${footer ? `<footer class="thread-part-footer">${footer}</footer>` : ""}
+        </section>
+      </article>
+    `;
+  };
+
+  app.renderTranscriptDisclosure = function renderTranscriptDisclosure({ type, label, status, statusLabel = "", at = "", details = "", footer = "", open: requestedOpen, disclosureKey = "" }) {
+    const normalizedStatus = String(status || "idle");
+    const open = Boolean(requestedOpen);
+    const disclosureKeyAttribute = disclosureKey
+      ? ` data-tool-disclosure-key="${app.escapeHtml(disclosureKey)}"`
+      : "";
+    return `
+      <article class="thread-message thread-message-system">
+        <details class="thread-part-disclosure thread-part-type-${app.escapeHtml(type || "status")}" data-part-type="${app.escapeHtml(
+          type || "status"
+        )}"${disclosureKeyAttribute}${open ? " open" : ""}>
+          <summary class="thread-part-disclosure-summary">
+            <span class="thread-part-chevron" aria-hidden="true"></span>
+            <span class="thread-part-label">${app.escapeHtml(label || "Agent 活动")}</span>
+            <span class="thread-part-state" data-state="${app.escapeHtml(normalizedStatus)}">${app.escapeHtml(
+              statusLabel || app.transcriptStatusLabel(normalizedStatus)
+            )}</span>
+            ${at ? `<span class="thread-message-time">${app.escapeHtml(app.formatMessageTime(at))}</span>` : ""}
+          </summary>
+          <div class="thread-part-disclosure-body">
+            ${details || ""}
+            ${footer ? `<footer class="thread-part-footer">${footer}</footer>` : ""}
+          </div>
+        </details>
+      </article>
+    `;
+  };
+
+  app.transcriptStatusLabel = function transcriptStatusLabel(status) {
+    return {
+      running: "运行中",
+      succeeded: "已完成",
+      passed: "通过",
+      failed: "失败",
+      cancelled: "已取消",
+      pending: "等待处理",
+      idle: "完成"
+    }[String(status || "").toLowerCase()] || String(status || "完成");
+  };
+
+  app.fileChangeTypeLabel = function fileChangeTypeLabel(value) {
+    const normalized = String(value || "").toLowerCase();
+    if (normalized.includes("add") || normalized === "created") return "新增";
+    if (normalized.includes("delete") || normalized === "removed") return "删除";
+    if (normalized.includes("rename") || normalized === "moved") return "重命名";
+    return "修改";
   };
 
   app.resetConversationRawMessages = function resetConversationRawMessages() {
@@ -2245,6 +2879,36 @@ export function installSessions(app) {
 
   app.handleConversationAction = function handleConversationAction(event) {
     const target = event.target instanceof Element ? event.target : null;
+    const disclosureSummary = target?.closest("details[data-tool-disclosure-key] > summary");
+    if (disclosureSummary && elements.codexRunSummary.contains(disclosureSummary)) {
+      const disclosure = disclosureSummary.parentElement;
+      const key = disclosure?.dataset?.toolDisclosureKey || "";
+      if (key) {
+        if (disclosure.open) state.expandedToolDisclosureKeys.delete(key);
+        else state.expandedToolDisclosureKeys.add(key);
+      }
+      return;
+    }
+    const fileLink = target?.closest('a[href^="#echo-workspace-file="]');
+    if (fileLink && elements.codexRunSummary.contains(fileLink)) {
+      event.preventDefault();
+      const encoded = String(fileLink.getAttribute("href") || "").slice("#echo-workspace-file=".length);
+      let reference = "";
+      try {
+        reference = decodeURIComponent(encoded);
+      } catch {
+        return;
+      }
+      app.openWorkspaceFileReference?.({
+        workspaceId: state.selectedCodexSession?.projectId || app.currentProjectId?.() || "",
+        sessionId: state.selectedCodexSession?.id || "",
+        targetAgentId: state.selectedCodexSession?.targetAgentId || app.currentTargetAgentId?.() || "",
+        executionTarget: state.selectedCodexSession?.execution?.mode === "worktree" ? "session-worktree" : "workspace",
+        reference,
+        returnFocus: fileLink
+      });
+      return;
+    }
     const button = target?.closest("[data-thread-action]");
     if (!button || !elements.codexRunSummary.contains(button)) return;
 
@@ -2389,22 +3053,30 @@ export function installSessions(app) {
 
   app.activeAssistantDraftFromEvents = function activeAssistantDraftFromEvents(events) {
     const drafts = new Map();
-    const completed = new Set();
+    const completedItems = new Set();
+    const completedTurns = new Set();
 
     for (const event of events || []) {
       const raw = event.raw || {};
       const method = raw.method || event.type || "";
       if (method === "item/completed" && raw.params?.item?.type === "agentMessage") {
         const key = app.assistantEventItemKey(event);
-        if (key) {
-          completed.add(key);
-          drafts.delete(key);
-        }
+        const turnKey = app.assistantEventTurnKey(event);
+        if (key) completedItems.add(key);
+        if (turnKey) completedTurns.add(turnKey);
+        app.deleteAssistantDraftsForCompletedEvent(drafts, event);
+        continue;
+      }
+      if (method === "turn/completed") {
+        const turnKey = app.assistantEventTurnKey(event);
+        if (turnKey) completedTurns.add(turnKey);
+        app.deleteAssistantDraftsForCompletedEvent(drafts, event);
         continue;
       }
       if (method !== "item/agentMessage/delta") continue;
       const key = app.assistantEventItemKey(event);
-      if (!key || completed.has(key)) continue;
+      const turnKey = app.assistantEventTurnKey(event);
+      if (!key || completedItems.has(key) || (turnKey && completedTurns.has(turnKey))) continue;
       const delta = String(event.text || "");
       if (!delta) continue;
       drafts.set(key, `${drafts.get(key) || ""}${delta}`);
@@ -2412,6 +3084,22 @@ export function installSessions(app) {
 
     const latest = Array.from(drafts.values()).filter(Boolean).at(-1) || "";
     return latest.trim();
+  };
+
+  app.deleteAssistantDraftsForCompletedEvent = function deleteAssistantDraftsForCompletedEvent(drafts, event) {
+    const key = app.assistantEventItemKey(event);
+    if (key) drafts.delete(key);
+    const turnKey = app.assistantEventTurnKey(event);
+    if (!turnKey) return;
+    for (const draftKey of Array.from(drafts.keys())) {
+      if (app.assistantEventItemKeyMatchesTurn(draftKey, turnKey)) drafts.delete(draftKey);
+    }
+  };
+
+  app.assistantEventItemKeyMatchesTurn = function assistantEventItemKeyMatchesTurn(itemKey, turnKey) {
+    const key = String(itemKey || "");
+    const turn = String(turnKey || "");
+    return Boolean(key && turn && (key === turn || key.startsWith(`${turn}\u001f`)));
   };
 
   app.assistantEventItemKey = function assistantEventItemKey(event) {
@@ -2422,6 +3110,15 @@ export function installSessions(app) {
     const itemId = String(params.itemId || item.id || "").trim();
     if (!threadId && !turnId && !itemId) return "";
     return [threadId, turnId, itemId].join("\u001f");
+  };
+
+  app.assistantEventTurnKey = function assistantEventTurnKey(event) {
+    const params = event?.raw?.params || {};
+    const item = params.item || {};
+    const threadId = String(params.threadId || params.thread?.id || item.threadId || "").trim();
+    const turnId = String(params.turnId || params.turn?.id || item.turnId || "").trim();
+    if (!threadId && !turnId) return "";
+    return [threadId, turnId].join("\u001f");
   };
 
   app.lastTimelineMessageText = function lastTimelineMessageText(timeline, role) {
@@ -2517,12 +3214,12 @@ export function installSessions(app) {
 
   app.userMessageAttachments = function userMessageAttachments(event) {
     const attachments = Array.isArray(event.raw?.attachments) ? event.raw.attachments : [];
-    return attachments.filter((attachment) => attachment?.type === "image");
+    return app.normalizeConversationAttachments(attachments);
   };
 
   app.messageAttachments = function messageAttachments(message) {
     const attachments = Array.isArray(message.attachments) ? message.attachments : [];
-    return attachments.filter((attachment) => attachment?.type === "image");
+    return app.normalizeConversationAttachments(attachments);
   };
 
   app.assistantMessageAttachments = function assistantMessageAttachments(event) {
@@ -2536,7 +3233,29 @@ export function installSessions(app) {
       raw.imageArtifact,
       raw.artifact
     ];
-    return app.dedupeConversationImageAttachments(candidates.map(app.normalizeConversationImageAttachment).filter(Boolean));
+    return app.dedupeConversationAttachments(candidates.map(app.normalizeConversationImageAttachment).filter(Boolean));
+  };
+
+  app.normalizeConversationAttachments = function normalizeConversationAttachments(attachments = []) {
+    return app.dedupeConversationAttachments((Array.isArray(attachments) ? attachments : []).map(app.normalizeConversationAttachment).filter(Boolean));
+  };
+
+  app.normalizeConversationAttachment = function normalizeConversationAttachment(attachment) {
+    if (!attachment || typeof attachment !== "object") return null;
+    const mimeType = String(attachment.mimeType || attachment.mime_type || "").trim();
+    const downloadPath = String(attachment.downloadPath || attachment.url || "").trim();
+    const rawType = String(attachment.type || "").trim().toLowerCase();
+    const type = rawType === "image" || mimeType.startsWith("image/") ? "image" : rawType === "file" ? "file" : "";
+    if (!type) return null;
+    return {
+      id: String(attachment.id || "").trim(),
+      type,
+      name: String(attachment.name || attachment.label || "").trim(),
+      mimeType,
+      downloadPath,
+      sha256: String(attachment.sha256 || "").trim(),
+      sizeBytes: Number(attachment.sizeBytes || 0) || 0
+    };
   };
 
   app.normalizeConversationImageAttachment = function normalizeConversationImageAttachment(attachment) {
@@ -2557,7 +3276,7 @@ export function installSessions(app) {
     };
   };
 
-  app.dedupeConversationImageAttachments = function dedupeConversationImageAttachments(attachments = []) {
+  app.dedupeConversationAttachments = function dedupeConversationAttachments(attachments = []) {
     const seen = new Set();
     const deduped = [];
     for (const attachment of Array.isArray(attachments) ? attachments : []) {
@@ -2573,8 +3292,10 @@ export function installSessions(app) {
     return deduped;
   };
 
+  app.dedupeConversationImageAttachments = app.dedupeConversationAttachments;
+
   app.renderConversationAttachments = function renderConversationAttachments(attachments = [], options = {}) {
-    const visibleAttachments = app.dedupeConversationImageAttachments(attachments);
+    const visibleAttachments = app.dedupeConversationAttachments(attachments);
     if (!visibleAttachments.length) return "";
     const previewImages = options.previewImages ?? options.role !== "user";
     return `
@@ -2582,12 +3303,20 @@ export function installSessions(app) {
         ${visibleAttachments
           .map((attachment, index) => {
             const label = app.attachmentDisplayLabel(attachment, index);
-            const imagePath = previewImages ? app.authenticatedResourcePath(attachment?.downloadPath || "") : "";
+            const resourcePath = app.authenticatedResourcePath(attachment?.downloadPath || "");
+            const imagePath = attachment?.type === "image" && previewImages ? resourcePath : "";
             if (imagePath) {
               return `
                 <a class="thread-attachment-image-link" href="${app.escapeHtml(imagePath)}" target="_blank" rel="noreferrer" aria-label="${app.escapeHtml(label)}">
                   <img class="thread-attachment-image" src="${app.escapeHtml(imagePath)}" alt="${app.escapeHtml(label)}" loading="lazy" decoding="async" referrerpolicy="no-referrer" />
                   <span class="thread-attachment-image-label">${app.escapeHtml(label)}</span>
+                </a>
+              `;
+            }
+            if (resourcePath) {
+              return `
+                <a class="thread-attachment-pill" href="${app.escapeHtml(resourcePath)}" target="_blank" rel="noreferrer" aria-label="${app.escapeHtml(label)}">
+                  <span class="thread-attachment-pill-label">${app.escapeHtml(label)}</span>
                 </a>
               `;
             }
@@ -2604,7 +3333,8 @@ export function installSessions(app) {
 
   app.attachmentDisplayLabel = function attachmentDisplayLabel(attachment, index = 0) {
     const name = String(attachment?.name || "").trim();
-    return name || `截图 ${index + 1}`;
+    if (name) return name;
+    return attachment?.type === "image" ? `截图 ${index + 1}` : `附件 ${index + 1}`;
   };
 
   app.jobPreview = function jobPreview(job) {
@@ -2701,13 +3431,17 @@ export function installSessions(app) {
       elements.composerActionsMeta.textContent = `当前会话不可继续，请先从左上角新建会话 · ${runtimeLabel}`;
       return;
     }
+    if (app.sessionAwaitsPlanFollowUp?.(session) && !app.sessionHasPendingWork(session)) {
+      elements.composerActionsMeta.textContent = `继续当前计划 · ${app.sessionProjectLabel(session?.projectId || elements.codexProject.value)} · ${runtimeLabel}`;
+      return;
+    }
     const health = app.sessionHealthEntry(session);
     if (health?.state === "risk") {
       const memoryHint = app.canCompactSelectedSession(session) ? "可先压缩上下文" : "可手动新建话题";
-      elements.composerActionsMeta.textContent = `会话较长 · ${memoryHint} · ${app.sessionProjectLabel(session?.projectId || elements.codexProject.value)} · ${runtimeLabel}`;
+      elements.composerActionsMeta.textContent = `会话较长 · ${memoryHint} · ${app.sessionProjectLabel(session?.projectId || elements.codexProject.value, session?.targetAgentId)} · ${runtimeLabel}`;
       return;
     }
     const lead = session ? (app.sessionHasPendingWork(session) ? "继续当前话题，接在这一轮后面" : "继续当前话题") : "发送后创建新话题";
-    elements.composerActionsMeta.textContent = `${lead} · ${app.sessionProjectLabel(session?.projectId || elements.codexProject.value)} · ${runtimeLabel}`;
+    elements.composerActionsMeta.textContent = `${lead} · ${app.sessionProjectLabel(session?.projectId || elements.codexProject.value, session?.targetAgentId)} · ${runtimeLabel}`;
   };
 }

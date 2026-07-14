@@ -1,16 +1,21 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { config } from "../config.js";
 import { CodexAppServerClient, buildUserInputs } from "./codexAppServerClient.js";
 import { formatGitSummary, gitWorkspaceSnapshot, summarizeGitWorkspace } from "./codexGitSummary.js";
-import { publicWorkspaces } from "./codexRunner.js";
+import { publicWorkspaces, readCodexRuntimeConfig } from "./codexRunner.js";
 import { codexCompatibleModel } from "./codexRuntime.js";
 import { httpFetch } from "./http.js";
 
 const maxDownloadedAttachmentBytes = 10 * 1024 * 1024;
+const maxAssistantLocalImageArtifactBytes = 10 * 1024 * 1024;
+const maxAssistantLocalImageArtifactsPerEvent = 4;
 const streamDeltaFlushDelayMs = 80;
 const streamDeltaFlushMaxChars = 1200;
+const localImagePathPattern = /\.(?:png|jpe?g|gif|webp|avif|svg)(?:[?#][^\s"'<>()[\]]*)?$/i;
+const attachmentStagingDirName = "codex-attachment-staging";
 
 export class CodexInteractiveRuntime {
   constructor(options = {}) {
@@ -26,13 +31,23 @@ export class CodexInteractiveRuntime {
     this.eventFlushes = new Map();
     this.deltaBuffers = new Map();
     this.turnGitBaselines = new Map();
+    this.threadCollaborationModes = new Map();
     this.completedTurns = new Map();
+    this.explicitCompactionThreads = new Set();
+    this.completedExplicitCompactionTurns = new Map();
     this.collaborationModePresets = null;
     this.collaborationModeUnavailable = false;
     this.expectedClientCloses = new WeakSet();
+    this.codexConfigFingerprint = "";
+    this.attachmentStagingRoot = path.join(config.dataDir, attachmentStagingDirName, sanitizePathSegment(this.agentId));
+    this.attachmentStagingReady = prepareAttachmentStagingRoot(this.attachmentStagingRoot).catch((error) => {
+      console.error(`[codex attachment recovery] ${error.message}`);
+      throw error;
+    });
   }
 
   async handleCommand(command) {
+    await this.attachmentStagingReady;
     try {
       return await this.#handleCommandWithClient(command);
     } catch (error) {
@@ -43,11 +58,12 @@ export class CodexInteractiveRuntime {
   }
 
   async warmup() {
+    await this.attachmentStagingReady;
     await this.#ensureClient();
   }
 
   stop() {
-    this.#cleanupAllAttachmentDirs().catch((error) => {
+    const cleanup = this.attachmentStagingReady.then(() => this.#cleanupAllAttachmentDirs()).catch((error) => {
       console.error(`[codex attachment cleanup] ${error.message}`);
     });
     if (this.client) this.expectedClientCloses.add(this.client);
@@ -57,12 +73,16 @@ export class CodexInteractiveRuntime {
     this.threadToSession.clear();
     this.activeTurns.clear();
     this.turnGitBaselines.clear();
+    this.threadCollaborationModes.clear();
     this.#clearCompletedTurns();
+    this.explicitCompactionThreads.clear();
+    this.#clearCompletedExplicitCompactionTurns();
     this.eventFlushes.clear();
     for (const buffer of this.deltaBuffers.values()) {
       if (buffer.timer) clearTimeout(buffer.timer);
     }
     this.deltaBuffers.clear();
+    return cleanup;
   }
 
   async #startSession(command, workspace) {
@@ -95,15 +115,20 @@ export class CodexInteractiveRuntime {
       attachments,
       workspace,
       runtime,
-      mode: command.payload?.mode
+      mode: command.payload?.mode,
+      hadPlanMode: commandPayloadHadPlanMode(command.payload),
+      commandId: command.id
     });
     return this.#turnCommandResult(appThreadId, turn);
   }
 
   async #handleCommandWithClient(command) {
-    await this.#ensureClient();
+    this.#refreshCodexConfig();
     const workspace = this.#workspaceFor(command);
     this.#rememberCommand(command);
+    if (command.type === "archive") return this.#archiveThread(command, workspace);
+
+    await this.#ensureClient();
 
     if (command.type === "start") return this.#startSession(command, workspace);
     if (command.type === "message") return this.#sendMessage(command, workspace);
@@ -113,6 +138,9 @@ export class CodexInteractiveRuntime {
   }
 
   #restartClientAfterAuthChange() {
+    this.#cleanupAllAttachmentDirs().catch((error) => {
+      console.error(`[codex attachment cleanup] ${error.message}`);
+    });
     if (this.client) this.expectedClientCloses.add(this.client);
     this.client?.stop();
     this.client = null;
@@ -120,7 +148,25 @@ export class CodexInteractiveRuntime {
     this.threadToSession.clear();
     this.activeTurns.clear();
     this.turnGitBaselines.clear();
+    this.threadCollaborationModes.clear();
     this.#clearCompletedTurns();
+    this.explicitCompactionThreads.clear();
+    this.#clearCompletedExplicitCompactionTurns();
+  }
+
+  #refreshCodexConfig() {
+    const codexConfig = readCodexRuntimeConfig();
+    if (!this.codexConfigFingerprint) {
+      this.codexConfigFingerprint = codexConfig.fingerprint;
+      return codexConfig;
+    }
+    if (codexConfig.fingerprint !== this.codexConfigFingerprint) {
+      this.#restartClientAfterAuthChange();
+      this.collaborationModePresets = null;
+      this.collaborationModeUnavailable = false;
+      this.codexConfigFingerprint = codexConfig.fingerprint;
+    }
+    return codexConfig;
   }
 
   async #sendMessage(command, workspace) {
@@ -138,7 +184,9 @@ export class CodexInteractiveRuntime {
         attachments,
         workspace,
         runtime,
-        mode: command.payload?.mode
+        mode: command.payload?.mode,
+        hadPlanMode: commandPayloadHadPlanMode(command.payload),
+        commandId: command.id
       });
       return this.#turnCommandResult(thread.appThreadId, turn);
     } catch (error) {
@@ -151,7 +199,9 @@ export class CodexInteractiveRuntime {
         attachments,
         workspace,
         runtime,
-        mode: command.payload?.mode
+        mode: command.payload?.mode,
+        hadPlanMode: commandPayloadHadPlanMode(command.payload),
+        commandId: command.id
       });
       return this.#turnCommandResult(thread.appThreadId, turn);
     }
@@ -161,11 +211,15 @@ export class CodexInteractiveRuntime {
     const appThreadId = command.appThreadId || this.sessions.get(command.sessionId)?.appThreadId;
     const activeTurnId = command.activeTurnId || (appThreadId ? this.activeTurns.get(appThreadId) : "");
     if (!appThreadId || !activeTurnId) {
+      if (appThreadId) await this.#cleanupAttachmentDir(appThreadId);
       return { ok: true, sessionStatus: "active" };
     }
-    await this.client.request("turn/interrupt", { threadId: appThreadId, turnId: activeTurnId }, 30000);
-    this.activeTurns.delete(appThreadId);
-    await this.#cleanupAttachmentDir(appThreadId);
+    try {
+      await this.client.request("turn/interrupt", { threadId: appThreadId, turnId: activeTurnId }, 30000);
+    } finally {
+      this.activeTurns.delete(appThreadId);
+      await this.#cleanupAttachmentDir(appThreadId);
+    }
     await this.#emit(command.sessionId, [
       {
         type: "turn.interrupted",
@@ -191,8 +245,60 @@ export class CodexInteractiveRuntime {
         raw: { method: "thread/compact/start" }
       }
     ]);
-    await this.client.request("thread/compact/start", { threadId: thread.appThreadId }, 60000);
+    this.explicitCompactionThreads.add(thread.appThreadId);
+    try {
+      await this.client.request("thread/compact/start", { threadId: thread.appThreadId }, 60000);
+    } catch (error) {
+      this.explicitCompactionThreads.delete(thread.appThreadId);
+      throw error;
+    }
     return { ok: true, appThreadId: thread.appThreadId, sessionStatus: "running" };
+  }
+
+  async #archiveThread(command, workspace) {
+    const runtime = this.#runtimeFor(command);
+    const remembered = this.sessions.get(command.sessionId);
+    const appThreadId = String(command.appThreadId || remembered?.appThreadId || "").trim();
+    const archived = command.payload?.archived !== false;
+    const method = archived ? "thread/archive" : "thread/unarchive";
+    if (!appThreadId) {
+      await this.#emit(command.sessionId, [
+        {
+          type: "thread.archive.skipped",
+          text: "Codex native archive sync skipped because this Echo session has no local thread id.",
+          sessionStatus: "active",
+          raw: { method, skipped: true, reason: "missing thread id" }
+        }
+      ]);
+      return { ok: true, sessionStatus: "active" };
+    }
+
+    try {
+      await this.#ensureClient();
+      const result = await this.client.request(method, { threadId: appThreadId }, 30000);
+      this.#rememberSession(command.sessionId, appThreadId, workspace, runtime);
+      await this.#emit(command.sessionId, [
+        {
+          type: archived ? "thread.archived" : "thread.unarchived",
+          text: archived ? "Local Codex thread archived." : "Local Codex thread restored.",
+          appThreadId,
+          sessionStatus: "active",
+          raw: { method, result }
+        }
+      ]);
+    } catch (error) {
+      await this.#emit(command.sessionId, [
+        {
+          type: "thread.archive.sync.failed",
+          text: archived ? "Local Codex thread archive sync failed." : "Local Codex thread restore sync failed.",
+          appThreadId,
+          sessionStatus: "active",
+          raw: { method, error: error.message || String(error) }
+        }
+      ]);
+    }
+
+    return { ok: true, appThreadId, sessionStatus: "active" };
   }
 
   #turnCommandResult(appThreadId, turn = {}) {
@@ -206,12 +312,16 @@ export class CodexInteractiveRuntime {
     };
   }
 
-  async #startOrSteerTurn({ sessionId, threadId, text, attachments, workspace, runtime, mode }) {
-    const preparedAttachments = await this.#materializeAttachments({ sessionId, threadId, attachments, workspace });
+  async #startOrSteerTurn({ sessionId, threadId, text, attachments, workspace, runtime, mode, hadPlanMode = false, commandId = "" }) {
+    const materialized = await this.#materializeAttachments({ sessionId, threadId, commandId, attachments });
+    const preparedAttachments = materialized.items;
     const requestedMode = normalizeSessionMode(mode);
     const inputText = attachmentReferenceText(String(text || "").trim(), preparedAttachments);
     const input = buildUserInputs(inputText, []);
-    if (input.length === 0) throw new Error("Codex turn input is empty.");
+    if (input.length === 0) {
+      await this.#cleanupAttachmentPaths(threadId, materialized.stagingDirs);
+      throw new Error("Codex turn input is empty.");
+    }
     const activeTurnId = this.activeTurns.get(threadId);
     try {
       if (activeTurnId) {
@@ -241,7 +351,7 @@ export class CodexInteractiveRuntime {
             ? { id: result?.turnId || activeTurnId, completed: true, sessionStatus: completedTurn.sessionStatus, error: completedTurn.error }
             : { id: result?.turnId || activeTurnId };
         } catch (error) {
-          if (!isNoActiveTurnToSteerError(error)) throw error;
+          if (!isRecoverableTurnSteerError(error)) throw error;
           this.activeTurns.delete(threadId);
           await this.#emit(sessionId, [
             {
@@ -262,13 +372,18 @@ export class CodexInteractiveRuntime {
         input,
         cwd: workspace.path,
         runtime,
-        mode: requestedMode
+        mode: requestedMode,
+        resetCollaborationMode: hadPlanMode || this.threadCollaborationModes.get(threadId) === "plan"
       });
       const gitBaseline = await gitWorkspaceSnapshot(workspace.path).catch(() => null);
       let result;
+      let recordedTurnStartParams = turnStartParams;
       try {
         result = await this.client.request("turn/start", turnStartParams.params, 60000);
       } catch (error) {
+        if (turnStartParams.collaborationMode === "execute") {
+          throw error;
+        }
         if (!turnStartParams.nativePlan) throw error;
         this.collaborationModeUnavailable = true;
         const fallbackInput = buildUserInputs(promptForSessionMode(inputText, requestedMode), []);
@@ -290,26 +405,44 @@ export class CodexInteractiveRuntime {
             raw: { method: "turn/start", mode: "plan", fallback: true, error: error.message || "" }
           }
         ]);
+        recordedTurnStartParams = { ...turnStartParams, collaborationMode: "" };
       }
       const turnId = result?.turn?.id;
       if (!turnId) throw new Error("Codex app-server did not return a turn id.");
       const completedTurn = this.#takeCompletedTurn(threadId, turnId);
       if (completedTurn) {
         await this.#waitForCompletedTurnEvents(completedTurn);
+        this.#recordThreadCollaborationMode(threadId, recordedTurnStartParams);
         return { id: turnId, completed: true, sessionStatus: completedTurn.sessionStatus, error: completedTurn.error };
       }
       this.activeTurns.set(threadId, turnId);
       if (gitBaseline) this.turnGitBaselines.set(turnGitBaselineKey(threadId, turnId), gitBaseline);
+      this.#recordThreadCollaborationMode(threadId, recordedTurnStartParams);
       return { id: turnId };
     } catch (error) {
-      if (!this.activeTurns.has(threadId)) await this.#cleanupAttachmentDir(threadId);
+      await this.#cleanupAttachmentPaths(threadId, materialized.stagingDirs);
       throw error;
     }
   }
 
-  async #turnStartParams({ threadId, input, cwd, runtime, mode }) {
+  async #turnStartParams({ threadId, input, cwd, runtime, mode, resetCollaborationMode = false }) {
     const params = this.#baseTurnStartParams({ threadId, input, cwd, runtime });
-    if (mode !== "plan") return { params, nativePlan: false };
+    if (mode !== "plan") {
+      if (resetCollaborationMode) {
+        const collaborationMode = await this.#defaultCollaborationMode(runtime);
+        if (collaborationMode) {
+          return {
+            params: {
+              ...params,
+              collaborationMode
+            },
+            nativePlan: false,
+            collaborationMode: "execute"
+          };
+        }
+      }
+      return { params, nativePlan: false, collaborationMode: "execute" };
+    }
 
     const collaborationMode = await this.#planCollaborationMode(runtime);
     if (!collaborationMode) {
@@ -318,7 +451,8 @@ export class CodexInteractiveRuntime {
           ...params,
           input: planFallbackInputs(input)
         },
-        nativePlan: false
+        nativePlan: false,
+        collaborationMode: ""
       };
     }
 
@@ -327,26 +461,39 @@ export class CodexInteractiveRuntime {
         ...params,
         collaborationMode
       },
-      nativePlan: true
+      nativePlan: true,
+      collaborationMode: "plan"
     };
   }
 
+  #recordThreadCollaborationMode(threadId, turnStartParams = {}) {
+    if (!threadId) return;
+    if (turnStartParams.collaborationMode === "plan") {
+      this.threadCollaborationModes.set(threadId, "plan");
+      return;
+    }
+    if (turnStartParams.collaborationMode === "execute") {
+      this.threadCollaborationModes.delete(threadId);
+    }
+  }
+
   #baseTurnStartParams({ threadId, input, cwd, runtime }) {
-    return {
+    const request = {
       threadId,
       input,
       cwd,
-      approvalPolicy: runtime.approvalPolicy,
-      model: runtime.model,
-      effort: runtime.reasoningEffort
+      approvalPolicy: runtime.approvalPolicy
     };
+    if (runtime.model) request.model = runtime.model;
+    if (runtime.reasoningEffort) request.effort = runtime.reasoningEffort;
+    return request;
   }
 
   async #planCollaborationMode(runtime) {
     const model = String(runtime?.model || "").trim();
     if (!model || this.collaborationModeUnavailable) return null;
 
-    const preset = await this.#planCollaborationPreset();
+    const preset = await this.#collaborationModePreset("plan");
     if (!preset) return null;
     const effort = normalizeReasoningEffortForCollaboration(
       preset.reasoning_effort ?? preset.reasoningEffort ?? runtime.reasoningEffort ?? "medium"
@@ -361,8 +508,32 @@ export class CodexInteractiveRuntime {
     };
   }
 
-  async #planCollaborationPreset() {
-    if (this.collaborationModePresets) return this.collaborationModePresets.plan || null;
+  async #defaultCollaborationMode(runtime) {
+    const model = String(runtime?.model || "").trim();
+    if (!model || this.collaborationModeUnavailable) return null;
+
+    const preset = await this.#collaborationModePreset("default");
+    if (!preset) return null;
+    const effort = normalizeReasoningEffortForCollaboration(
+      runtime.reasoningEffort ?? runtime.effort ?? preset.reasoning_effort ?? preset.reasoningEffort
+    );
+    return {
+      mode: "default",
+      settings: {
+        model,
+        reasoning_effort: effort || null,
+        developer_instructions: null
+      }
+    };
+  }
+
+  async #collaborationModePreset(mode) {
+    const presets = await this.#collaborationModePresetMap();
+    return presets?.[mode] || null;
+  }
+
+  async #collaborationModePresetMap() {
+    if (this.collaborationModePresets) return this.collaborationModePresets;
     if (this.collaborationModeUnavailable) return null;
     try {
       const result = await this.client.request("collaborationMode/list", {}, 15000);
@@ -371,8 +542,12 @@ export class CodexInteractiveRuntime {
         presets.find((preset) => String(preset?.mode || "").toLowerCase() === "plan") ||
         presets.find((preset) => String(preset?.name || "").toLowerCase() === "plan") ||
         null;
-      this.collaborationModePresets = { plan };
-      return plan;
+      const defaultMode =
+        presets.find((preset) => String(preset?.mode || "").toLowerCase() === "default") ||
+        presets.find((preset) => String(preset?.name || "").toLowerCase() === "default") ||
+        null;
+      this.collaborationModePresets = { plan, default: defaultMode };
+      return this.collaborationModePresets;
     } catch (error) {
       this.collaborationModeUnavailable = true;
       return null;
@@ -473,6 +648,7 @@ export class CodexInteractiveRuntime {
     if (previousAppThreadId) {
       this.activeTurns.delete(previousAppThreadId);
       this.threadToSession.delete(previousAppThreadId);
+      this.threadCollaborationModes.delete(previousAppThreadId);
       this.#cleanupAttachmentDir(previousAppThreadId).catch((error) => {
         console.error(`[codex attachment cleanup] ${error.message}`);
       });
@@ -529,7 +705,10 @@ export class CodexInteractiveRuntime {
       this.threadToSession.clear();
       this.activeTurns.clear();
       this.turnGitBaselines.clear();
+      this.threadCollaborationModes.clear();
       this.#clearCompletedTurns();
+      this.explicitCompactionThreads.clear();
+      this.#clearCompletedExplicitCompactionTurns();
       for (const buffer of this.deltaBuffers.values()) {
         if (buffer.timer) clearTimeout(buffer.timer);
       }
@@ -565,27 +744,29 @@ export class CodexInteractiveRuntime {
   }
 
   #threadConfig(workspace, runtime) {
-    return {
+    const request = {
       cwd: workspace.path,
       approvalPolicy: runtime.approvalPolicy,
       approvalsReviewer: "user",
       sandbox: normalizeSandboxMode(runtime.sandbox),
       serviceName: "echo-codex",
-      model: runtime.model,
       experimentalRawEvents: false,
       persistExtendedHistory: false
     };
+    if (runtime.model) request.model = runtime.model;
+    return request;
   }
 
   #resumeConfig(workspace, runtime) {
-    return {
+    const request = {
       cwd: workspace.path,
       approvalPolicy: runtime.approvalPolicy,
       approvalsReviewer: "user",
       sandbox: normalizeSandboxMode(runtime.sandbox),
-      model: runtime.model,
       persistExtendedHistory: false
     };
+    if (runtime.model) request.model = runtime.model;
+    return request;
   }
 
   #workspaceFor(commandOrProjectId) {
@@ -626,6 +807,7 @@ export class CodexInteractiveRuntime {
     const sessionId = this.threadToSession.get(appThreadId);
     this.threadToSession.delete(appThreadId);
     this.activeTurns.delete(appThreadId);
+    this.threadCollaborationModes.delete(appThreadId);
     this.#cleanupAttachmentDir(appThreadId).catch((error) => {
       console.error(`[codex attachment cleanup] ${error.message}`);
     });
@@ -676,12 +858,18 @@ export class CodexInteractiveRuntime {
   #runtimeFor(command = {}) {
     const remembered = this.sessions.get(command.sessionId)?.runtime || {};
     const runtime = command.runtime && typeof command.runtime === "object" ? command.runtime : remembered;
+    const retryOverride = runtime.retryOverride && typeof runtime.retryOverride === "object" ? runtime.retryOverride : {};
+    const codexConfig = readCodexRuntimeConfig();
+    const modelOverride = codexCompatibleModel(retryOverride.model);
+    const reasoningOverride = normalizeReasoningEffortForCollaboration(retryOverride.reasoningEffort || retryOverride.effort);
+    const sessionModel = codexCompatibleModel(runtime.model);
+    const sessionReasoningEffort = normalizeReasoningEffortForCollaboration(runtime.reasoningEffort || runtime.effort);
     return {
       approvalPolicy: String(runtime.approvalPolicy || config.codex.approvalPolicy || "on-request").trim() || "on-request",
       sandbox: String(runtime.sandbox || config.codex.sandbox || "workspace-write").trim() || "workspace-write",
-      model: codexCompatibleModel(runtime.model || config.codex.model) || null,
+      model: modelOverride || sessionModel || codexCompatibleModel(codexConfig.model) || null,
       reasoningEffort:
-        String(runtime.reasoningEffort || runtime.effort || config.codex.reasoningEffort || "").trim().toLowerCase() || null
+        reasoningOverride || sessionReasoningEffort || String(codexConfig.reasoningEffort || "").trim().toLowerCase() || null
     };
   }
 
@@ -690,8 +878,18 @@ export class CodexInteractiveRuntime {
     const sessionId = threadId ? this.threadToSession.get(threadId) : "";
     if (!sessionId) return;
 
-    const event = notificationToEvent(message);
+    if (message.method === "turn/completed" && this.#takeCompletedExplicitCompactionTurn(threadId, message)) {
+      this.activeTurns.delete(threadId);
+      return;
+    }
+
+    const explicitCompaction = threadId ? this.explicitCompactionThreads.has(threadId) : false;
+    const event = notificationToEvent(message, { explicitCompaction });
     if (!event) return;
+    if (explicitCompaction && isCompactionCompletionNotification(message)) {
+      this.#rememberCompletedExplicitCompactionTurn(threadId, message);
+      this.explicitCompactionThreads.delete(threadId);
+    }
     if (message.method === "turn/started") {
       this.activeTurns.set(threadId, message.params?.turn?.id || "");
     }
@@ -717,6 +915,43 @@ export class CodexInteractiveRuntime {
     this.#handleServerRequestAsync(message).catch((error) => {
       this.client.reject(message.id, -32603, error.message || "Echo approval handling failed.");
     });
+  }
+
+  #rememberCompletedExplicitCompactionTurn(threadId, message = {}) {
+    const id = String(threadId || "").trim();
+    if (!id) return;
+    const turnId = compactionNotificationTurnId(message);
+    if (turnId) {
+      const key = turnGitBaselineKey(id, turnId);
+      const previous = this.completedExplicitCompactionTurns.get(key);
+      if (previous?.timer) clearTimeout(previous.timer);
+      const timer = setTimeout(() => {
+        this.completedExplicitCompactionTurns.delete(key);
+      }, 30000);
+      timer.unref?.();
+      this.completedExplicitCompactionTurns.set(key, { timer });
+    }
+  }
+
+  #takeCompletedExplicitCompactionTurn(threadId, message = {}) {
+    const id = String(threadId || "").trim();
+    if (!id) return false;
+    const turnId = compactionNotificationTurnId(message);
+    const key = turnId ? turnGitBaselineKey(id, turnId) : "";
+    if (key && this.completedExplicitCompactionTurns.has(key)) {
+      const completed = this.completedExplicitCompactionTurns.get(key);
+      if (completed?.timer) clearTimeout(completed.timer);
+      this.completedExplicitCompactionTurns.delete(key);
+      return true;
+    }
+    return false;
+  }
+
+  #clearCompletedExplicitCompactionTurns() {
+    for (const completed of this.completedExplicitCompactionTurns.values()) {
+      if (completed?.timer) clearTimeout(completed.timer);
+    }
+    this.completedExplicitCompactionTurns.clear();
   }
 
   async #handleServerRequestAsync(message) {
@@ -770,7 +1005,7 @@ export class CodexInteractiveRuntime {
   }
 
   async #emit(sessionId, events) {
-    return this.#enqueueEventTask(sessionId, () => this.onEvents(sessionId, events));
+    return this.#enqueueEventTask(sessionId, () => this.#sendEvents(sessionId, events));
   }
 
   #enqueueEventTask(sessionId, task) {
@@ -789,8 +1024,8 @@ export class CodexInteractiveRuntime {
   async #emitAfterPendingDeltas(sessionId, events) {
     const pendingDelta = this.#takePendingDelta(sessionId);
     return this.#enqueueEventTask(sessionId, async () => {
-      if (pendingDelta) await this.onEvents(sessionId, [pendingDelta]);
-      await this.onEvents(sessionId, events);
+      if (pendingDelta) await this.#sendEvents(sessionId, [pendingDelta]);
+      await this.#sendEvents(sessionId, events);
     });
   }
 
@@ -836,7 +1071,7 @@ export class CodexInteractiveRuntime {
   #flushPendingDelta(sessionId) {
     const pendingDelta = this.#takePendingDelta(sessionId);
     if (!pendingDelta) return null;
-    return this.#enqueueEventTask(sessionId, () => this.onEvents(sessionId, [pendingDelta]));
+    return this.#enqueueEventTask(sessionId, () => this.#sendEvents(sessionId, [pendingDelta]));
   }
 
   #takePendingDelta(sessionId) {
@@ -850,16 +1085,33 @@ export class CodexInteractiveRuntime {
   async #emitTurnCompleted(sessionId, threadId, event) {
     const pendingDelta = this.#takePendingDelta(sessionId);
     return this.#enqueueEventTask(sessionId, async () => {
-      if (pendingDelta) await this.onEvents(sessionId, [pendingDelta]);
-      const events = [event];
       try {
-      const gitSummary = await this.#gitSummaryEvent(sessionId, threadId, event);
-        if (gitSummary) events.push(gitSummary);
-      } catch (error) {
-        console.error(`[codex git summary] ${error.message}`);
+        if (pendingDelta) await this.#sendEvents(sessionId, [pendingDelta]);
+        const events = [event];
+        try {
+          const gitSummary = await this.#gitSummaryEvent(sessionId, threadId, event);
+          if (gitSummary) events.push(gitSummary);
+        } catch (error) {
+          console.error(`[codex git summary] ${error.message}`);
+        }
+        await this.#sendEvents(sessionId, events);
+      } finally {
+        await this.#cleanupAttachmentDir(threadId);
       }
-      await this.onEvents(sessionId, events);
     });
+  }
+
+  async #sendEvents(sessionId, events) {
+    const preparedEvents = await this.#prepareEventsForRelay(sessionId, events);
+    if (preparedEvents.length > 0) await this.onEvents(sessionId, preparedEvents);
+  }
+
+  async #prepareEventsForRelay(sessionId, events) {
+    const list = Array.isArray(events) ? events : [];
+    if (list.length === 0) return [];
+    const workspace = this.sessions.get(sessionId)?.workspace || null;
+    const prepared = await Promise.all(list.map((event) => eventWithAssistantLocalImageArtifacts(event, workspace)));
+    return prepared.map((event) => redactManagedAttachmentPaths(event, this.attachmentStagingRoot));
   }
 
   async #gitSummaryEvent(sessionId, threadId, event) {
@@ -881,7 +1133,7 @@ export class CodexInteractiveRuntime {
     };
   }
 
-  async #materializeAttachments({ sessionId, threadId, attachments, workspace }) {
+  async #materializeAttachments({ sessionId, threadId, commandId, attachments }) {
     const materialized = Array.isArray(attachments)
       ? attachments
           .filter((attachment) => attachment?.type === "localImage" && String(attachment.path || "").trim())
@@ -895,41 +1147,58 @@ export class CodexInteractiveRuntime {
             downloadPath: String(attachment.downloadPath || "").trim()
           }))
       : [];
-    const images = Array.isArray(attachments) ? attachments.filter((attachment) => attachment?.type === "image") : [];
-    if (images.length === 0) return materialized;
+    const relayAttachments = Array.isArray(attachments) ? attachments.filter((attachment) => ["image", "file"].includes(attachment?.type)) : [];
+    if (relayAttachments.length === 0) return { items: materialized, stagingDirs: [] };
 
-    const attachmentDir = await this.#ensureAttachmentDir(workspace.path, sessionId, threadId);
-    for (const [index, attachment] of images.entries()) {
-      const image = await loadImageAttachment(attachment);
-      if (!image) continue;
-      const filePath = path.join(attachmentDir, buildAttachmentFileName(attachment, index, image.extension));
-      await fs.writeFile(filePath, image.buffer, { mode: 0o600 });
-      materialized.push({
-        type: "imageReference",
-        path: filePath,
-        name: String(attachment.name || "").trim(),
-        mimeType: image.mimeType,
-        sizeBytes: image.buffer.length,
-        downloadPath: String(attachment.downloadPath || "").trim()
-      });
+    const attachmentDir = await this.#ensureAttachmentDir(sessionId, threadId, commandId);
+    try {
+      for (const [index, attachment] of relayAttachments.entries()) {
+        const content = await loadRelayAttachment(attachment);
+        if (!content) continue;
+        const filePath = path.join(attachmentDir, buildAttachmentFileName(attachment, index, content.extension));
+        await fs.writeFile(filePath, content.buffer, { mode: 0o600 });
+        materialized.push({
+          type: attachment.type === "image" ? "imageReference" : "fileReference",
+          path: filePath,
+          name: String(attachment.name || "").trim(),
+          mimeType: content.mimeType,
+          sizeBytes: content.buffer.length,
+          downloadPath: String(attachment.downloadPath || "").trim()
+        });
+      }
+    } catch (error) {
+      await this.#cleanupAttachmentPaths(threadId, [attachmentDir]);
+      throw error;
     }
-    return materialized;
+    return { items: materialized, stagingDirs: [attachmentDir] };
   }
 
-  async #ensureAttachmentDir(workspacePath, sessionId, threadId) {
-    const dirPath =
-      this.attachmentDirs.get(threadId) ||
-      path.join(workspacePath, ".echo-codex-attachments", sanitizePathSegment(sessionId), sanitizePathSegment(threadId));
-    await fs.mkdir(dirPath, { recursive: true });
-    this.attachmentDirs.set(threadId, dirPath);
+  async #ensureAttachmentDir(sessionId, threadId, commandId) {
+    await this.attachmentStagingReady;
+    const commandSegment = `${sanitizePathSegment(commandId || "command")}-${randomUUID()}`;
+    const dirPath = path.join(this.attachmentStagingRoot, sanitizePathSegment(sessionId), commandSegment);
+    await fs.mkdir(dirPath, { recursive: true, mode: 0o700 });
+    await assertManagedAttachmentPath(this.attachmentStagingRoot, dirPath);
+    const dirs = this.attachmentDirs.get(threadId) || new Set();
+    dirs.add(dirPath);
+    this.attachmentDirs.set(threadId, dirs);
     return dirPath;
   }
 
   async #cleanupAttachmentDir(threadId) {
-    const dirPath = this.attachmentDirs.get(threadId);
-    if (!dirPath) return;
-    this.attachmentDirs.delete(threadId);
-    await fs.rm(dirPath, { recursive: true, force: true });
+    const dirs = this.attachmentDirs.get(threadId);
+    if (!dirs) return;
+    await this.#cleanupAttachmentPaths(threadId, Array.from(dirs));
+  }
+
+  async #cleanupAttachmentPaths(threadId, dirPaths = []) {
+    const dirs = this.attachmentDirs.get(threadId);
+    const targets = Array.from(new Set(dirPaths)).filter(Boolean);
+    if (dirs) {
+      for (const dirPath of targets) dirs.delete(dirPath);
+      if (dirs.size === 0) this.attachmentDirs.delete(threadId);
+    }
+    await Promise.all(targets.map((dirPath) => removeManagedAttachmentStagingPath(this.attachmentStagingRoot, dirPath)));
   }
 
   async #cleanupAllAttachmentDirs() {
@@ -940,26 +1209,35 @@ export class CodexInteractiveRuntime {
 
 function buildAttachmentFileName(attachment, index, extension) {
   const originalName = String(attachment?.name || "").trim();
-  const parsed = originalName ? path.parse(originalName).name : `image-${index + 1}`;
-  const baseName = sanitizePathSegment(parsed || `image-${index + 1}`);
-  return `${baseName}-${randomUUID()}.${extension}`;
+  const fallbackKind = attachment?.type === "image" || attachment?.type === "localImage" ? "image" : "attachment";
+  const parsed = originalName ? path.parse(originalName).name : `${fallbackKind}-${index + 1}`;
+  const baseName = sanitizePathSegment(parsed || `${fallbackKind}-${index + 1}`);
+  const safeExtension = String(extension || "bin").replace(/[^a-z0-9]+/gi, "").toLowerCase() || "bin";
+  return `${baseName}-${randomUUID()}.${safeExtension}`;
 }
 
 function attachmentReferenceText(text, attachments = []) {
   const references = Array.isArray(attachments)
-    ? attachments.filter((attachment) => attachment?.type === "imageReference" && String(attachment.path || "").trim())
+    ? attachments.filter((attachment) => ["imageReference", "fileReference"].includes(attachment?.type) && String(attachment.path || "").trim())
     : [];
   if (references.length === 0) return text;
 
   const lines = [];
   const normalizedText = String(text || "").trim();
   if (normalizedText) lines.push(normalizedText, "");
-  lines.push("[Echo image attachments]");
-  lines.push("Echo cached these images as files/relay references. Do not inline or echo image bytes/base64 in the conversation.");
+  const imageOnly = references.every((attachment) => attachment.type === "imageReference");
+  lines.push(imageOnly ? "[Echo image attachments]" : "[Echo attachments]");
+  lines.push(
+    imageOnly
+      ? "Echo cached these images as files/relay references. Do not inline or echo image bytes/base64 in the conversation."
+      : "Echo cached these attachments as local files/relay references. Use the local file paths when you need to inspect them."
+  );
+  if (!imageOnly) lines.push("Do not inline or echo attachment bytes/base64 in the conversation.");
   references.forEach((attachment, index) => {
-    const label = oneLine(attachment.name) || `image-${index + 1}`;
+    const kind = attachment.type === "imageReference" ? "image" : "file";
+    const label = oneLine(attachment.name) || `${kind}-${index + 1}`;
     const details = [oneLine(attachment.mimeType), attachment.sizeBytes ? `${attachment.sizeBytes} bytes` : ""].filter(Boolean).join(", ");
-    lines.push(`- ${label}${details ? ` (${details})` : ""}`);
+    lines.push(`- ${kind}: ${label}${details ? ` (${details})` : ""}`);
     lines.push(`  local file: ${oneLine(attachment.path)}`);
     const downloadPath = oneLine(attachment.downloadPath);
     if (downloadPath) lines.push(`  relay path: ${downloadPath}`);
@@ -979,38 +1257,363 @@ function sanitizePathSegment(value) {
     .slice(0, 80) || "attachment";
 }
 
+async function prepareAttachmentStagingRoot(agentRoot) {
+  const dataRoot = path.resolve(config.dataDir);
+  const stagingRoot = path.join(dataRoot, attachmentStagingDirName);
+  await fs.mkdir(dataRoot, { recursive: true, mode: 0o700 });
+  await fs.mkdir(stagingRoot, { recursive: true, mode: 0o700 });
+  const realDataRoot = await fs.realpath(dataRoot);
+  const realStagingRoot = await fs.realpath(stagingRoot);
+  if (!isPathInside(realStagingRoot, realDataRoot) || realStagingRoot === realDataRoot) {
+    throw new Error("Codex attachment staging root is outside the Echo data directory.");
+  }
+
+  await fs.mkdir(agentRoot, { recursive: true, mode: 0o700 });
+  await assertManagedAttachmentPath(stagingRoot, agentRoot);
+  const entries = await fs.readdir(agentRoot);
+  for (const entry of entries) {
+    const stalePath = path.join(agentRoot, entry);
+    try {
+      await removeManagedAttachmentStagingPath(agentRoot, stalePath);
+    } catch (error) {
+      console.error(`[codex attachment recovery] skipped ${stalePath}: ${error.message}`);
+    }
+  }
+  return agentRoot;
+}
+
+async function assertManagedAttachmentPath(rootPath, candidatePath) {
+  const resolvedRoot = path.resolve(rootPath);
+  const resolvedCandidate = path.resolve(candidatePath);
+  if (resolvedCandidate === resolvedRoot || !isPathInside(resolvedCandidate, resolvedRoot)) {
+    throw new Error("Refusing to access a Codex attachment path outside the managed staging root.");
+  }
+  const [realRoot, realCandidate] = await Promise.all([fs.realpath(resolvedRoot), fs.realpath(resolvedCandidate)]);
+  if (realCandidate === realRoot || !isPathInside(realCandidate, realRoot)) {
+    throw new Error("Refusing to access a Codex attachment realpath outside the managed staging root.");
+  }
+  return realCandidate;
+}
+
+export async function removeManagedAttachmentStagingPath(rootPath, candidatePath) {
+  const resolvedCandidate = path.resolve(candidatePath);
+  try {
+    await fs.lstat(resolvedCandidate);
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+  await assertManagedAttachmentPath(rootPath, resolvedCandidate);
+  await fs.rm(resolvedCandidate, { recursive: true, force: true });
+  await removeEmptyManagedAttachmentParent(rootPath, path.dirname(resolvedCandidate));
+  return true;
+}
+
+async function removeEmptyManagedAttachmentParent(rootPath, candidatePath) {
+  if (path.resolve(candidatePath) === path.resolve(rootPath)) return;
+  try {
+    await assertManagedAttachmentPath(rootPath, candidatePath);
+    await fs.rmdir(candidatePath);
+  } catch (error) {
+    if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error?.code)) throw error;
+  }
+}
+
+function redactManagedAttachmentPaths(value, rootPath) {
+  const root = String(rootPath || "").trim();
+  if (!root) return value;
+  if (typeof value === "string") {
+    return value.split(root).join("[Echo attachment staging]");
+  }
+  if (Array.isArray(value)) return value.map((item) => redactManagedAttachmentPaths(item, root));
+  if (!value || typeof value !== "object") return value;
+  const next = {};
+  for (const [key, child] of Object.entries(value)) next[key] = redactManagedAttachmentPaths(child, root);
+  return next;
+}
+
 function isPathInside(candidatePath, rootPath) {
   const relative = path.relative(rootPath, candidatePath);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function parseImageDataUrl(url) {
-  const match = /^data:(image\/[a-z0-9.+_-]+);base64,([a-z0-9+/=\s]+)$/i.exec(String(url || "").trim());
+async function eventWithAssistantLocalImageArtifacts(event = {}, workspace = null) {
+  if (!shouldAttachAssistantLocalImages(event)) return event;
+
+  const refs = assistantLocalImageReferences(event);
+  if (refs.length === 0) return event;
+
+  const roots = await localImageArtifactRoots(workspace);
+  if (roots.length === 0) return event;
+
+  const materialized = await materializeLocalImageReferences(refs, roots);
+  if (materialized.artifacts.length === 0) return event;
+
+  const next = {
+    ...event,
+    raw: cloneJson(event.raw || {})
+  };
+  const fallbackText = "图片已生成。";
+  next.text = cleanLocalImageReferences(next.text, materialized.cleanupRefs, fallbackText);
+  if (next.finalMessage) {
+    next.finalMessage = cleanLocalImageReferences(next.finalMessage, materialized.cleanupRefs, fallbackText);
+  }
+
+  const item = next.raw?.params?.item;
+  if (item && typeof item === "object") {
+    if (typeof item.text === "string") item.text = cleanLocalImageReferences(item.text, materialized.cleanupRefs, fallbackText);
+    if (typeof item.result === "string") item.result = cleanLocalImageReferences(item.result, materialized.cleanupRefs, fallbackText);
+  }
+
+  const localArtifacts = materialized.artifacts.map((artifact) => ({
+    source: "assistant-local-image",
+    label: artifact.label,
+    mimeType: artifact.mimeType,
+    dataUrl: artifact.dataUrl
+  }));
+  next.raw.echoLocalImageArtifacts = [
+    ...(Array.isArray(next.raw.echoLocalImageArtifacts) ? next.raw.echoLocalImageArtifacts : []),
+    ...localArtifacts
+  ];
+  return next;
+}
+
+function shouldAttachAssistantLocalImages(event = {}) {
+  const raw = event.raw && typeof event.raw === "object" ? event.raw : {};
+  const item = raw.params?.item;
+  if ((raw.method || event.type) !== "item/completed" || item?.type !== "agentMessage") return false;
+  return assistantLocalImageTexts(event).some(maybeContainsLocalImageReference);
+}
+
+function assistantLocalImageReferences(event = {}) {
+  const refs = [];
+  for (const text of assistantLocalImageTexts(event)) {
+    refs.push(...localImageReferencesFromText(text));
+  }
+  const seen = new Set();
+  return refs.filter((ref) => {
+    const key = `${ref.kind}\u001f${ref.target}\u001f${ref.matchText}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function assistantLocalImageTexts(event = {}) {
+  const raw = event.raw && typeof event.raw === "object" ? event.raw : {};
+  const item = raw.params?.item;
+  return [item?.text, item?.result, event.finalMessage, event.text]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+function maybeContainsLocalImageReference(value) {
+  const text = String(value || "");
+  return /\.(?:png|jpe?g|gif|webp|avif|svg)\b/i.test(text) && (text.includes("/") || /file:\/\//i.test(text) || text.includes("]("));
+}
+
+function localImageReferencesFromText(value) {
+  const text = String(value || "");
+  const refs = [];
+
+  const addRef = (kind, match, label, target) => {
+    const normalizedTarget = normalizeLocalImageTarget(target);
+    if (!normalizedTarget) return;
+    refs.push({
+      kind,
+      matchText: match[0],
+      index: match.index,
+      label: String(label || "").trim(),
+      target: normalizedTarget
+    });
+  };
+
+  const markdownImage = /!\[([^\]]*)]\(\s*(<[^>]+>|[^)\s]+)(?:\s+["'][^"']*["'])?\s*\)/g;
+  for (const match of text.matchAll(markdownImage)) {
+    addRef("markdownImage", match, match[1], match[2]);
+  }
+
+  const markdownLink = /\[([^\]]*)]\(\s*(<[^>]+>|[^)\s]+)(?:\s+["'][^"']*["'])?\s*\)/g;
+  for (const match of text.matchAll(markdownLink)) {
+    if (text[Math.max(0, match.index - 1)] === "!") continue;
+    addRef("markdownLink", match, match[1], match[2]);
+  }
+
+  const barePath = /(?:file:\/\/\/?|\/)[^\s"'<>()[\]]+\.(?:png|jpe?g|gif|webp|avif|svg)(?:[?#][^\s"'<>()[\]]*)?/gi;
+  for (const match of text.matchAll(barePath)) {
+    if (refs.some((ref) => rangesOverlap(ref.index, ref.matchText.length, match.index, match[0].length))) continue;
+    addRef("barePath", match, "", match[0]);
+  }
+
+  return refs.sort((a, b) => a.index - b.index).slice(0, 16);
+}
+
+function rangesOverlap(leftStart, leftLength, rightStart, rightLength) {
+  return leftStart < rightStart + rightLength && rightStart < leftStart + leftLength;
+}
+
+function normalizeLocalImageTarget(value) {
+  let target = String(value || "").trim();
+  if (!target) return "";
+  if (target.startsWith("<") && target.endsWith(">")) target = target.slice(1, -1).trim();
+  if (/^(?:https?|data|blob):/i.test(target) || target.startsWith("/api/codex/")) return "";
+  if (/^file:/i.test(target)) {
+    try {
+      target = fileURLToPath(target);
+    } catch {
+      return "";
+    }
+  }
+  target = target.replace(/[?#].*$/, "");
+  try {
+    target = decodeURIComponent(target);
+  } catch {
+    // Keep the original path if it was not URI encoded.
+  }
+  return target;
+}
+
+async function localImageArtifactRoots(workspace = {}) {
+  const candidates = [workspace?.path, workspace?.basePath].map((item) => String(item || "").trim()).filter(Boolean);
+  const roots = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const resolved = path.resolve(candidate);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    const realPath = await fs.realpath(resolved).catch(() => "");
+    if (realPath) roots.push({ path: resolved, realPath });
+  }
+  return roots;
+}
+
+async function materializeLocalImageReferences(refs = [], roots = []) {
+  const artifacts = [];
+  const cleanupRefs = [];
+  const seenRealPaths = new Set();
+
+  for (const ref of refs) {
+    const image = await readAllowedLocalImageReference(ref, roots);
+    if (!image) continue;
+    if (seenRealPaths.has(image.realPath)) {
+      cleanupRefs.push({ ...ref, label: image.label });
+      continue;
+    }
+    if (artifacts.length >= maxAssistantLocalImageArtifactsPerEvent) continue;
+
+    seenRealPaths.add(image.realPath);
+    cleanupRefs.push({ ...ref, label: image.label });
+    artifacts.push({
+      label: image.label,
+      mimeType: image.mimeType,
+      dataUrl: `data:${image.mimeType};base64,${image.buffer.toString("base64")}`
+    });
+  }
+
+  return { artifacts, cleanupRefs };
+}
+
+async function readAllowedLocalImageReference(ref = {}, roots = []) {
+  const rawPath = String(ref.target || "").trim();
+  if (!rawPath || roots.length === 0 || !localImagePathPattern.test(rawPath)) return null;
+
+  const resolvedPath = path.isAbsolute(rawPath) ? path.resolve(rawPath) : path.resolve(roots[0].path, rawPath);
+  const stat = await fs.stat(resolvedPath).catch(() => null);
+  if (!stat?.isFile() || stat.size <= 0 || stat.size > maxAssistantLocalImageArtifactBytes) return null;
+
+  const realPath = await fs.realpath(resolvedPath).catch(() => "");
+  if (!realPath || !roots.some((root) => isPathInside(realPath, root.realPath))) return null;
+
+  const buffer = await fs.readFile(realPath).catch(() => null);
+  if (!Buffer.isBuffer(buffer) || buffer.length <= 0 || buffer.length > maxAssistantLocalImageArtifactBytes) return null;
+  const mimeType = imageMimeTypeFromBuffer(buffer);
+  if (!mimeType) return null;
+
+  return {
+    realPath,
+    mimeType,
+    buffer,
+    label: localImageLabel(ref, resolvedPath)
+  };
+}
+
+function localImageLabel(ref = {}, filePath = "") {
+  const label = oneLine(ref.label);
+  if (label && !label.includes("/") && !label.includes("\\") && label.length <= 120) return label;
+  return path.basename(filePath) || "Assistant image";
+}
+
+function cleanLocalImageReferences(value, refs = [], fallback = "") {
+  let text = String(value || "");
+  if (!text) return text;
+
+  for (const ref of [...refs].sort((a, b) => b.matchText.length - a.matchText.length)) {
+    const replacement = ref.kind === "markdownImage" ? "" : ref.label || "图片";
+    text = text.split(ref.matchText).join(replacement);
+  }
+
+  const cleaned = text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/[ \t]+$/g, ""))
+    .filter((line) => !/^\s*(?:文件位置|文件路径|路径|file(?: location)?|path)\s*[:：]?\s*$/i.test(line))
+    .join("\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return cleaned || fallback;
+}
+
+function imageMimeTypeFromBuffer(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 4) return "";
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return "image/png";
+  }
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
+  const header6 = buffer.subarray(0, 6).toString("ascii");
+  if (header6 === "GIF87a" || header6 === "GIF89a") return "image/gif";
+  if (buffer.length >= 12 && buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") {
+    return "image/webp";
+  }
+  if (buffer.length >= 12 && buffer.subarray(4, 8).toString("ascii") === "ftyp") {
+    const brand = buffer.subarray(8, 12).toString("ascii");
+    if (brand === "avif" || brand === "avis") return "image/avif";
+  }
+  const prefix = buffer.subarray(0, Math.min(buffer.length, 512)).toString("utf8").trimStart().toLowerCase();
+  if (prefix.startsWith("<svg") || (prefix.startsWith("<?xml") && prefix.includes("<svg"))) return "image/svg+xml";
+  return "";
+}
+
+function cloneJson(value) {
+  if (!value || typeof value !== "object") return value;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function parseAttachmentDataUrl(url, attachment = {}) {
+  const match = /^data:([^;,]*)(?:;[a-z0-9=.+_-]+)*;base64,([a-z0-9+/=\s]+)$/i.exec(String(url || "").trim());
   if (!match) return null;
-  const mimeType = match[1].toLowerCase();
+  const mimeType = normalizeAttachmentMimeType(attachment.mimeType || match[1]);
   const base64 = match[2].replace(/\s+/g, "");
   if (!base64) return null;
+  if (attachment?.type === "image" && !mimeType.startsWith("image/")) return null;
   return {
     mimeType,
-    extension: extensionFromMimeType(mimeType),
+    extension: extensionForAttachment(attachment, mimeType),
     buffer: Buffer.from(base64, "base64")
   };
 }
 
-async function loadImageAttachment(attachment) {
+async function loadRelayAttachment(attachment) {
   const dataUrl = String(attachment?.url || "").trim();
-  if (dataUrl.startsWith("data:image/")) return parseImageDataUrl(dataUrl);
-  return downloadRelayImageAttachment(attachment);
+  if (dataUrl.startsWith("data:")) return parseAttachmentDataUrl(dataUrl, attachment);
+  return downloadRelayAttachment(attachment);
 }
 
-async function downloadRelayImageAttachment(attachment) {
+async function downloadRelayAttachment(attachment) {
   const url = relayAttachmentUrl(attachment);
   if (!url) return null;
 
   const response = await httpFetch(url, {
-    headers: {
-      "X-Echo-Token": config.token
-    },
+    headers: relayAttachmentHeaders(),
     timeoutMs: config.network.timeoutMs
   });
   if (!response.ok) {
@@ -1035,12 +1638,26 @@ async function downloadRelayImageAttachment(attachment) {
     }
   }
 
-  const mimeType = imageMimeType(response.headers.get("content-type") || attachment?.mimeType || "");
+  let mimeType = normalizeAttachmentMimeType(response.headers.get("content-type") || attachment?.mimeType || "");
+  if (attachment?.type === "image") {
+    const detectedMimeType = imageMimeTypeFromBuffer(buffer);
+    if (detectedMimeType) mimeType = detectedMimeType;
+    if (!mimeType.startsWith("image/")) throw new Error(`Codex attachment is not an image: ${mimeType}`);
+  }
   return {
     mimeType,
-    extension: extensionFromMimeType(mimeType),
+    extension: extensionForAttachment(attachment, mimeType),
     buffer
   };
+}
+
+function relayAttachmentHeaders() {
+  const headers = {};
+  const agentToken = String(config.agent?.token || "").trim();
+  const legacyToken = String(config.token || "").trim();
+  if (agentToken) headers["X-Echo-Agent-Token"] = agentToken;
+  if (legacyToken) headers["X-Echo-Token"] = legacyToken;
+  return headers;
 }
 
 function relayAttachmentUrl(attachment) {
@@ -1053,21 +1670,37 @@ function relayAttachmentUrl(attachment) {
   return new URL(pathOrUrl, `${config.relayUrl}/`).toString();
 }
 
-function imageMimeType(value) {
+function normalizeAttachmentMimeType(value) {
   const mimeType = String(value || "").split(";")[0].trim().toLowerCase();
-  if (!mimeType) return "image/png";
-  if (!mimeType.startsWith("image/")) throw new Error(`Codex attachment is not an image: ${mimeType}`);
-  return mimeType;
+  if (/^[a-z0-9.+_-]+\/[a-z0-9.+_-]+$/i.test(mimeType)) return mimeType;
+  return "application/octet-stream";
 }
 
 function attachmentLabel(attachment) {
-  return String(attachment?.name || attachment?.attachmentId || attachment?.id || "image").trim() || "image";
+  return String(attachment?.name || attachment?.attachmentId || attachment?.id || "attachment").trim() || "attachment";
+}
+
+function extensionForAttachment(attachment, mimeType) {
+  const fromName = path.extname(String(attachment?.name || "").trim()).replace(/^\./, "").replace(/[^a-z0-9]+/gi, "").toLowerCase();
+  if (fromName) return fromName.slice(0, 24);
+  return extensionFromMimeType(mimeType);
 }
 
 function extensionFromMimeType(mimeType) {
   if (mimeType === "image/jpeg") return "jpg";
   if (mimeType === "image/svg+xml") return "svg";
-  return mimeType.split("/")[1]?.replace(/[^a-z0-9.+_-]+/gi, "") || "png";
+  if (mimeType === "text/plain") return "txt";
+  if (mimeType === "application/pdf") return "pdf";
+  if (mimeType === "application/json") return "json";
+  if (mimeType === "text/csv") return "csv";
+  if (mimeType === "application/zip") return "zip";
+  if (mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return "docx";
+  if (mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return "xlsx";
+  if (mimeType === "application/vnd.openxmlformats-officedocument.presentationml.presentation") return "pptx";
+  if (mimeType === "application/msword") return "doc";
+  if (mimeType === "application/vnd.ms-excel") return "xls";
+  if (mimeType === "application/vnd.ms-powerpoint") return "ppt";
+  return mimeType.split("/")[1]?.replace(/[^a-z0-9.+_-]+/gi, "").slice(0, 24) || "bin";
 }
 
 function isThreadNotFoundError(error) {
@@ -1104,7 +1737,7 @@ function recoveredThreadPrompt(history = [], currentText = "") {
   for (const message of visibleHistory) {
     lines.push(`${message.role}: ${message.text}`);
   }
-  lines.push("", "当前用户消息：", current || "（本条消息只有附件或截图，请结合附件继续。）");
+  lines.push("", "当前用户消息：", current || "（本条消息只有附件，请结合附件继续。）");
   return lines.join("\n");
 }
 
@@ -1136,8 +1769,8 @@ function turnGitBaselineKey(threadId, turnId) {
   return thread && turn ? `${thread}\u001f${turn}` : "";
 }
 
-function isNoActiveTurnToSteerError(error) {
-  return /no active turn to steer/i.test(String(error?.message || ""));
+function isRecoverableTurnSteerError(error) {
+  return /no active turn to steer|cannot steer a compact turn/i.test(String(error?.message || ""));
 }
 
 function isBufferedDeltaMethod(method) {
@@ -1171,7 +1804,7 @@ function appendDeltaEvent(target, event) {
   }
 }
 
-function notificationToEvent(message) {
+function notificationToEvent(message, options = {}) {
   const type = message.method || "codex";
   const event = {
     type,
@@ -1191,6 +1824,15 @@ function notificationToEvent(message) {
     event.sessionStatus = failed ? "failed" : "active";
     event.error = message.params?.turn?.error?.message || "";
   }
+  if (message.method === "thread/archived" || message.method === "thread/unarchived") {
+    event.sessionStatus = "active";
+  }
+  if (options.explicitCompaction && isCompactionCompletionNotification(message)) {
+    event.explicitCompactionCommand = true;
+    event.raw = { ...message, echoExplicitCompactionCommand: true };
+    event.clearActiveTurnId = true;
+    event.sessionStatus = "active";
+  }
   if (message.method === "item/agentMessage/delta") {
     event.finalMessage = message.params?.delta || "";
   }
@@ -1198,6 +1840,14 @@ function notificationToEvent(message) {
     event.finalMessage = message.params.item.text || "";
   }
   return event;
+}
+
+function isCompactionCompletionNotification(message = {}) {
+  return message.method === "thread/compacted" || (message.method === "item/completed" && message.params?.item?.type === "contextCompaction");
+}
+
+function compactionNotificationTurnId(message = {}) {
+  return String(message.params?.turn?.id || message.params?.turnId || message.params?.item?.turnId || "").trim();
 }
 
 function notificationText(message) {
@@ -1216,6 +1866,8 @@ function notificationText(message) {
     return error ? `Turn ${status}: ${error}` : `Turn ${status}.`;
   }
   if (message.method === "thread/compacted") return "Context compaction completed.";
+  if (message.method === "thread/archived") return "Local Codex thread archived.";
+  if (message.method === "thread/unarchived") return "Local Codex thread restored.";
   if (message.method === "thread/tokenUsage/updated") return tokenUsageText(params.tokenUsage);
   if (message.method === "turn/started") return "Codex turn started.";
   if (message.method === "thread/status/changed") return `Thread status changed: ${JSON.stringify(params.status || {})}`;
@@ -1292,6 +1944,15 @@ function normalizeSessionMode(value) {
   return mode === "plan" ? "plan" : "execute";
 }
 
+function commandPayloadHadPlanMode(payload = {}) {
+  return (
+    payload?.hasPriorPlanMode === true ||
+    payload?.priorPlanMode === true ||
+    normalizeSessionMode(payload?.previousMode) === "plan" ||
+    normalizeSessionMode(payload?.previousComposerMode) === "plan"
+  );
+}
+
 function promptForSessionMode(text, mode) {
   const normalized = String(text || "").trim();
   if (mode !== "plan" || !normalized) return normalized;
@@ -1322,7 +1983,7 @@ function planFallbackInputs(input = []) {
 function normalizeReasoningEffortForCollaboration(value) {
   const effort = typeof value === "string" ? value : value === null ? "" : String(value || "");
   const normalized = effort.trim().toLowerCase();
-  return ["low", "medium", "high", "xhigh"].includes(normalized) ? normalized : "";
+  return ["low", "medium", "high", "xhigh", "max"].includes(normalized) ? normalized : "";
 }
 
 function isCodexAuthRefreshError(error) {

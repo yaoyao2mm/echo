@@ -9,8 +9,8 @@ if (!targetBase) {
   fail("Missing ECHO_RELAY_URL or ECHO_PUBLIC_URL.");
 }
 
-if (!process.env.ECHO_TOKEN) {
-  fail("Missing ECHO_TOKEN. The doctor uses the same token as the desktop agent.");
+if (!process.env.ECHO_AGENT_TOKEN && !process.env.ECHO_TOKEN) {
+  fail("Missing ECHO_AGENT_TOKEN. The doctor can also use legacy ECHO_TOKEN if no per-agent token is configured.");
 }
 
 const baseUrl = new URL(targetBase);
@@ -50,7 +50,7 @@ try {
 
   const response = await httpFetch(agentPingUrl, {
     headers: {
-      "X-Echo-Token": config.token
+      "X-Echo-Agent-Token": config.agent.token
     },
     timeoutMs: 15000
   });

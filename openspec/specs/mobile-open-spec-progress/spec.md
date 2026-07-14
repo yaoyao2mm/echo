@@ -18,7 +18,7 @@ The system SHALL expose the mobile Open Spec entry only for the currently select
 The system SHALL generate OpenSpec summaries on the desktop agent from the selected allowlisted workspace and MUST NOT allow the mobile client to provide arbitrary filesystem paths for OpenSpec reading.
 
 #### Scenario: Mobile requests OpenSpec summary
-- **WHEN** the mobile client requests the OpenSpec summary for a selected `projectId`
+- **WHEN** the mobile client requests the OpenSpec summary for a selected `projectId` and `targetAgentId`
 - **THEN** the relay queues the request for the owning desktop agent and the desktop agent resolves only the fixed OpenSpec directory candidates inside the advertised workspace
 
 #### Scenario: OpenSpec path would escape the workspace
@@ -37,15 +37,22 @@ The system SHALL calculate change progress from Markdown checkbox items in each 
 - **THEN** the summary keeps the change visible with a no-tasks status and excludes it from aggregate task completion math
 
 ### Requirement: Mobile users can review OpenSpec progress in a story timeline
-The mobile UI SHALL present OpenSpec summary data as a mobile-friendly progress surface with overview metrics and a change timeline.
+The mobile UI SHALL present OpenSpec summary data as a mobile-friendly change list whose default rows prioritize title, status, and progress, with proposal context, affected specs, tasks, and actions available on demand.
 
 #### Scenario: User opens Open Spec panel
-- **WHEN** the mobile user taps the Open Spec entry for an available workspace
-- **THEN** the app opens a panel showing workspace context, OpenSpec directory name, aggregate task progress, change count, spec count, and a refresh action
+- **WHEN** the user opens OpenSpec for an available workspace
+- **THEN** the app opens the existing workspace panel with a concise change overview and refresh action
+- **AND** orchestration controls appear only when the optional orchestration plugin is enabled and available
 
-#### Scenario: User reviews a change
+#### Scenario: User scans changes
 - **WHEN** the summary includes one or more changes
-- **THEN** each timeline row shows the change title or id, progress, task counts, concise proposal context when available, affected specs when known, and an expandable read-only task checklist
+- **THEN** each default row shows the change title or id, one status signal, and lightweight progress
+- **AND** proposal context, affected specs, task checklist, and per-change actions require opening that change's details
+
+#### Scenario: User opens a change detail
+- **WHEN** the user selects a change while not in orchestration selection mode
+- **THEN** the panel shows its existing read-only tasks and supporting OpenSpec context
+- **AND** existing Apply, Sync, Validate, and Archive actions remain available without requiring orchestration
 
 ### Requirement: OpenSpec UI handles loading, empty, error, and offline states
 The mobile Open Spec UI SHALL handle unavailable data without blocking the existing Codex workbench.

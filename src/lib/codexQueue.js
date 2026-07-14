@@ -10,12 +10,19 @@ import {
   completeSessionCommand as completeStoredSessionCommand,
   completeWorkspaceCommand as completeStoredWorkspaceCommand,
   createFileRequest as createStoredFileRequest,
+  createDesktopPluginCommand as createStoredDesktopPluginCommand,
+  createAgentSkillCommand as createStoredAgentSkillCommand,
   createSessionInteraction as createStoredSessionInteraction,
   createSessionApproval as createStoredSessionApproval,
   createQuickSkill as createStoredQuickSkill,
+  createMcpApplyCommand as createStoredMcpApplyCommand,
   createSession as createStoredSession,
   createWorkspaceCommand as createStoredWorkspaceCommand,
+  createWorkspaceImportListCommand as createStoredWorkspaceImportListCommand,
+  createWorkspaceRegisterCommand as createStoredWorkspaceRegisterCommand,
+  deleteOwnerData as deleteStoredOwnerData,
   deleteQuickSkill as deleteStoredQuickSkill,
+  deleteSession as deleteStoredSession,
   decideSessionInteraction as decideStoredSessionInteraction,
   decideSessionApproval as decideStoredSessionApproval,
   enqueueSessionMessage as enqueueStoredSessionMessage,
@@ -25,27 +32,54 @@ import {
   getSessionCommandSessionId as getStoredSessionCommandSessionId,
   getSessionAttachmentContent as getStoredSessionAttachmentContent,
   getSession as getStoredSession,
+  getWorkspaceRuntimePreference as getStoredWorkspaceRuntimePreference,
   listQuickSkills as listStoredQuickSkills,
+  listSessionCommandReconciliations as listStoredSessionCommandReconciliations,
+  ownerStorageUsage as storedOwnerStorageUsage,
   queueSessionWorktreeAction as queueStoredSessionWorktreeAction,
-  recoverLostRunningSessionsForAgent,
+  requestAgentRestart as requestStoredAgentRestart,
+  armAgentRestart as armStoredAgentRestart,
+  pendingAgentRestart as pendingStoredAgentRestart,
+  reconcileAgentRestarts as reconcileStoredAgentRestarts,
+  expireAgentRestarts as expireStoredAgentRestarts,
+  reconcileSessionCommands as reconcileStoredSessionCommands,
   listSessions as listStoredSessions,
   updateQuickSkill as updateStoredQuickSkill,
   acquireNextWorkspaceCommand,
   statusSnapshot,
   touchAgent,
+  updateWorkspaceVisibility as updateStoredWorkspaceVisibility,
+  updateWorkspaceRuntimePreference as updateStoredWorkspaceRuntimePreference,
   upsertAgent,
   waitForSessionApprovalDecision as getStoredApprovalDecision,
   waitForSessionInteractionDecision as getStoredInteractionDecision
 } from "./codexStore.js";
+import { hasActiveOrchestrationRuns } from "./orchestrationService.js";
 
 const events = new EventEmitter();
 
 export function updateCodexAgent(input = {}) {
+  return updateCodexAgentSnapshot(input);
+}
+
+export function updateCodexAgentSnapshot(input = {}) {
   return upsertAgent(input);
 }
 
-export function codexStatus() {
-  return statusSnapshot();
+export function touchCodexAgent(agentId) {
+  return touchAgent(agentId);
+}
+
+export function codexStatus(options = {}) {
+  return statusSnapshot(options);
+}
+
+export function getCodexWorkspaceRuntimePreference(input = {}) {
+  return getStoredWorkspaceRuntimePreference(input);
+}
+
+export function updateCodexWorkspaceRuntimePreference(input = {}) {
+  return updateStoredWorkspaceRuntimePreference(input);
 }
 
 export function createCodexSession(input) {
@@ -53,7 +87,7 @@ export function createCodexSession(input) {
   const projectId = String(input.projectId || "").trim();
   const attachments = Array.isArray(input.attachments) ? input.attachments : [];
   if (!prompt && attachments.length === 0) {
-    const error = new Error("Codex session prompt or screenshot is required.");
+    const error = new Error("Codex session prompt or attachment is required.");
     error.statusCode = 400;
     throw error;
   }
@@ -70,7 +104,10 @@ export function createCodexSession(input) {
     runtime: input.runtime || {},
     mode: input.mode,
     sourceSessionId: input.sourceSessionId,
-    threadMode: input.threadMode
+    threadMode: input.threadMode,
+    ownerUser: input.ownerUser,
+    targetAgentId: input.targetAgentId,
+    user: input.user
   });
   events.emit("codex-session-command");
   notifySessionChanged(session?.id);
@@ -83,7 +120,9 @@ export function enqueueCodexSessionMessage(id, input = {}) {
     attachments: input.attachments,
     runtime: input.runtime || {},
     mode: input.mode,
-    projectId: input.projectId
+    projectId: input.projectId,
+    targetAgentId: input.targetAgentId,
+    user: input.user
   });
   events.emit("codex-session-command");
   notifySessionChanged(session?.id);
@@ -114,12 +153,26 @@ export function deleteCodexQuickSkill(id) {
   return deleteStoredQuickSkill(id);
 }
 
-export function getCodexSessionAttachmentContent(id) {
-  return getStoredSessionAttachmentContent(id);
+export function codexOwnerStorageUsage(ownerUser) {
+  return storedOwnerStorageUsage(ownerUser);
 }
 
-export function getCodexSessionArtifactContent(id) {
-  return getStoredSessionArtifactContent(id);
+export function deleteCodexOwnerData(ownerUser) {
+  return deleteStoredOwnerData(ownerUser);
+}
+
+export function deleteCodexSession(id, input = {}) {
+  const result = deleteStoredSession(id, input);
+  notifySessionChanged(id);
+  return result;
+}
+
+export function getCodexSessionAttachmentContent(id, options = {}) {
+  return getStoredSessionAttachmentContent(id, options);
+}
+
+export function getCodexSessionArtifactContent(id, options = {}) {
+  return getStoredSessionArtifactContent(id, options);
 }
 
 export function createCodexWorkspace(input = {}) {
@@ -128,8 +181,47 @@ export function createCodexWorkspace(input = {}) {
   return command;
 }
 
-export function getCodexWorkspaceCommand(id) {
-  return getStoredWorkspaceCommand(id);
+export function createCodexWorkspaceImportList(input = {}) {
+  const command = createStoredWorkspaceImportListCommand(input);
+  events.emit("codex-workspace-command");
+  return command;
+}
+
+export function createCodexWorkspaceRegister(input = {}) {
+  const command = createStoredWorkspaceRegisterCommand(input);
+  events.emit("codex-workspace-command");
+  return command;
+}
+
+export function updateCodexWorkspaceVisibility(input = {}) {
+  return updateStoredWorkspaceVisibility(input);
+}
+
+export function createCodexMcpApply(input = {}) {
+  const command = createStoredMcpApplyCommand(input);
+  events.emit("codex-workspace-command");
+  return command;
+}
+
+export function createCodexAgentSkillCommand(input = {}) {
+  const command = createStoredAgentSkillCommand(input);
+  events.emit("codex-workspace-command");
+  return command;
+}
+
+export function createCodexDesktopPluginCommand(input = {}) {
+  if (input.pluginId === "orchestration" && input.enabled === false && hasActiveOrchestrationRuns(input.targetAgentId)) {
+    const error = new Error("Orchestration has active Runs. Pause, cancel, or let the current Attempt reach a safe boundary first.");
+    error.statusCode = 409;
+    throw error;
+  }
+  const command = createStoredDesktopPluginCommand(input);
+  events.emit("codex-workspace-command");
+  return command;
+}
+
+export function getCodexWorkspaceCommand(id, options = {}) {
+  return getStoredWorkspaceCommand(id, options);
 }
 
 export function createCodexFileRequest(input = {}) {
@@ -227,6 +319,12 @@ export function cancelCodexSession(id, input = {}) {
 }
 
 export function queueCodexSessionWorktreeAction(id, input = {}) {
+  const current = getStoredSession(id, { user: input.user });
+  if (current?.execution?.ownerType === "orchestration") {
+    const error = new Error("Orchestration Worktrees are applied automatically by their Run.");
+    error.statusCode = 409;
+    throw error;
+  }
   const session = queueStoredSessionWorktreeAction(id, input);
   if (session) events.emit("codex-session-command");
   notifySessionChanged(session?.id || id);
@@ -235,23 +333,16 @@ export function queueCodexSessionWorktreeAction(id, input = {}) {
 
 export async function waitForCodexSessionCommand(input = {}) {
   const agent = updateCodexAgent(input.agent || {});
-  const reportsSessionActivity =
-    Array.isArray(input.busySessionIds) || Array.isArray(input.runningSessionIds);
-  if (reportsSessionActivity) {
-    const recoveredSessionIds = recoverLostRunningSessionsForAgent({
-      agentId: agent.id,
-      busySessionIds: input.busySessionIds,
-      runningSessionIds: input.runningSessionIds
-    });
-    for (const sessionId of recoveredSessionIds) notifySessionChanged(sessionId);
-  }
+  const agentInstanceId = input.agentInstanceId || input.agent?.agentInstanceId || input.agent?.instanceId;
   const acquire = () => {
     const command = acquireNextSessionCommand({
       agentId: agent.id,
+      agentInstanceId,
       workspaces: agent.workspaces,
       busySessionIds: input.busySessionIds,
       busyProjectIds: input.busyProjectIds,
-      runningSessionIds: input.runningSessionIds
+      runningSessionIds: input.runningSessionIds,
+      commandTypes: input.commandTypes
     });
     if (command) notifySessionChanged(command.sessionId);
     return command;
@@ -267,18 +358,51 @@ export async function waitForCodexSessionCommand(input = {}) {
   });
 }
 
+export function listCodexSessionCommandReconciliations(input = {}) {
+  const agent = updateCodexAgent(input.agent || {});
+  return listStoredSessionCommandReconciliations({ agentId: agent.id });
+}
+
+export function reconcileCodexSessionCommands(input = {}) {
+  const agent = updateCodexAgent(input.agent || {});
+  const outcomes = reconcileStoredSessionCommands({
+    agentId: agent.id,
+    agentInstanceId: input.agentInstanceId || input.agent?.agentInstanceId || input.agent?.instanceId,
+    states: input.states
+  });
+  for (const outcome of outcomes) {
+    if (!outcome.commandId) continue;
+    events.emit("codex-session-command");
+    notifySessionChanged(getStoredSessionCommandSessionId(outcome.commandId));
+  }
+  return outcomes;
+}
+
 export function appendCodexSessionEvents(id, incomingEvents = [], options = {}) {
   if (options.agent) updateCodexAgent(options.agent);
   else if (options.agentId) touchAgent(options.agentId);
-  const ok = appendStoredSessionEvents(id, incomingEvents, { agentId: options.agentId || options.agent?.id });
-  if (ok) notifySessionChanged(id);
+  const ok = appendStoredSessionEvents(id, incomingEvents, {
+    agentId: options.agentId || options.agent?.id,
+    agentInstanceId: options.agentInstanceId || options.agent?.agentInstanceId || options.agent?.instanceId,
+    commandId: options.commandId,
+    attempt: options.attempt
+  });
+  if (ok) {
+    // Relay-side threshold evaluation keeps compaction independent of PWA lifetime.
+    compactStoredSession(id, { automatic: true, reason: "context-threshold", skipRefresh: true });
+    events.emit("codex-session-command");
+    notifySessionChanged(id);
+  }
   return ok;
 }
 
 export function createCodexSessionApproval(input = {}, options = {}) {
   if (options.agent) updateCodexAgent(options.agent);
   else if (options.agentId) touchAgent(options.agentId);
-  const approval = createStoredSessionApproval(input, { agentId: options.agentId || options.agent?.id });
+  const approval = createStoredSessionApproval(input, {
+    agentId: options.agentId || options.agent?.id,
+    agentInstanceId: options.agentInstanceId || options.agent?.agentInstanceId || options.agent?.instanceId
+  });
   if (approval) events.emit(`codex-approval-${approval.id}`);
   notifySessionChanged(approval?.sessionId);
   return approval;
@@ -294,7 +418,10 @@ export function decideCodexSessionApproval(id, input = {}, options = {}) {
 export function createCodexSessionInteraction(input = {}, options = {}) {
   if (options.agent) updateCodexAgent(options.agent);
   else if (options.agentId) touchAgent(options.agentId);
-  const interaction = createStoredSessionInteraction(input, { agentId: options.agentId || options.agent?.id });
+  const interaction = createStoredSessionInteraction(input, {
+    agentId: options.agentId || options.agent?.id,
+    agentInstanceId: options.agentInstanceId || options.agent?.agentInstanceId || options.agent?.instanceId
+  });
   if (interaction) events.emit(`codex-interaction-${interaction.id}`);
   notifySessionChanged(interaction?.sessionId);
   return interaction;
@@ -311,14 +438,20 @@ export async function waitForCodexSessionApproval(id, input = {}) {
   if (input.agent) updateCodexAgent(input.agent);
   else if (input.agentId) touchAgent(input.agentId);
 
-  const immediateApproval = getStoredApprovalDecision(id, { agentId: input.agentId || input.agent?.id });
+  const immediateApproval = getStoredApprovalDecision(id, {
+    agentId: input.agentId || input.agent?.id,
+    agentInstanceId: input.agentInstanceId || input.agent?.agentInstanceId || input.agent?.instanceId
+  });
   if (immediateApproval) return immediateApproval;
 
   const waitMs = clampWaitMs(input.waitMs);
   return waitForEventValue({
     eventNames: [`codex-approval-${id}`, input.sessionId ? sessionChangedEventName(input.sessionId) : ""],
     waitMs,
-    getValue: () => getStoredApprovalDecision(id, { agentId: input.agentId || input.agent?.id })
+    getValue: () => getStoredApprovalDecision(id, {
+      agentId: input.agentId || input.agent?.id,
+      agentInstanceId: input.agentInstanceId || input.agent?.agentInstanceId || input.agent?.instanceId
+    })
   });
 }
 
@@ -326,14 +459,20 @@ export async function waitForCodexSessionInteraction(id, input = {}) {
   if (input.agent) updateCodexAgent(input.agent);
   else if (input.agentId) touchAgent(input.agentId);
 
-  const immediateInteraction = getStoredInteractionDecision(id, { agentId: input.agentId || input.agent?.id });
+  const immediateInteraction = getStoredInteractionDecision(id, {
+    agentId: input.agentId || input.agent?.id,
+    agentInstanceId: input.agentInstanceId || input.agent?.agentInstanceId || input.agent?.instanceId
+  });
   if (immediateInteraction) return immediateInteraction;
 
   const waitMs = clampWaitMs(input.waitMs);
   return waitForEventValue({
     eventNames: [`codex-interaction-${id}`, input.sessionId ? sessionChangedEventName(input.sessionId) : ""],
     waitMs,
-    getValue: () => getStoredInteractionDecision(id, { agentId: input.agentId || input.agent?.id })
+    getValue: () => getStoredInteractionDecision(id, {
+      agentId: input.agentId || input.agent?.id,
+      agentInstanceId: input.agentInstanceId || input.agent?.agentInstanceId || input.agent?.instanceId
+    })
   });
 }
 
@@ -341,10 +480,44 @@ export function completeCodexSessionCommand(id, result = {}, options = {}) {
   if (options.agent) updateCodexAgent(options.agent);
   else if (options.agentId) touchAgent(options.agentId);
   const sessionId = result?.sessionId || getStoredSessionCommandSessionId(id);
-  const ok = completeStoredSessionCommand(id, result, { agentId: options.agentId || options.agent?.id });
+  const ok = completeStoredSessionCommand(id, result, {
+    agentId: options.agentId || options.agent?.id,
+    agentInstanceId: options.agentInstanceId || options.agent?.agentInstanceId || options.agent?.instanceId,
+    attempt: options.attempt
+  });
   if (ok) events.emit("codex-session-command");
   if (ok && sessionId) notifySessionChanged(sessionId);
   return ok;
+}
+
+export function requestCodexAgentRestart(input = {}) {
+  const operation = requestStoredAgentRestart(input);
+  if (operation?.sessionId) notifySessionChanged(operation.sessionId);
+  return operation;
+}
+
+export function armCodexAgentRestart(input = {}) {
+  const operation = armStoredAgentRestart(input);
+  if (operation?.sessionId) notifySessionChanged(operation.sessionId);
+  return operation;
+}
+
+export function pendingCodexAgentRestart(input = {}) {
+  return pendingStoredAgentRestart(input);
+}
+
+export function reconcileCodexAgentRestarts(agent = {}) {
+  const outcomes = reconcileStoredAgentRestarts(agent);
+  for (const operation of outcomes) {
+    if (operation?.sessionId) notifySessionChanged(operation.sessionId);
+  }
+  return outcomes;
+}
+
+export function expireCodexAgentRestarts() {
+  const sessionIds = expireStoredAgentRestarts();
+  for (const sessionId of sessionIds) notifySessionChanged(sessionId);
+  return sessionIds;
 }
 
 export function subscribeCodexSession(id, listener) {

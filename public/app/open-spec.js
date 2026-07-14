@@ -4,7 +4,7 @@ export function installOpenSpec(app) {
   app.toggleOpenSpecPanel = async function toggleOpenSpecPanel(event) {
     event?.stopPropagation();
     if (!elements.openSpecPanel) return;
-    if (elements.openSpecPanel.hidden) {
+    if (elements.openSpecPanel.hidden && elements.openSpecRunPage?.hidden !== false) {
       await app.openOpenSpecPanel();
       return;
     }
@@ -13,12 +13,14 @@ export function installOpenSpec(app) {
 
   app.openOpenSpecPanel = async function openOpenSpecPanel() {
     if (!elements.openSpecPanel) return;
+    if (!app.isDesktopPluginEnabled?.("open-spec")) return;
     if (elements.codexView?.classList.contains("sessions-open")) app.closeSessionSidebar?.({ restoreFocus: false });
     if (elements.codexView?.classList.contains("files-open")) app.closeFileBrowser?.({ restoreFocus: false });
     app.closeProjectSwitcher?.();
     app.closeQuickSkillsPanel?.();
     app.closeAgentSkillsPanel?.();
     app.closeMcpPanel?.();
+    app.closeDesktopPluginPanel?.();
     app.setTopbarCollapsed?.(false);
 
     if (state.openSpecCloseTimer) {
@@ -26,6 +28,7 @@ export function installOpenSpec(app) {
       state.openSpecCloseTimer = null;
     }
     elements.openSpecPanel.hidden = false;
+    if (elements.openSpecRunPage) elements.openSpecRunPage.hidden = true;
     elements.openSpecButton?.setAttribute("aria-expanded", "true");
     elements.sessionBackdrop.hidden = false;
     elements.sessionBackdrop.dataset.layer = "open-spec";
@@ -43,10 +46,11 @@ export function installOpenSpec(app) {
     } else {
       app.renderOpenSpecPanel();
     }
+    if (app.orchestrationAvailable() && !state.orchestrationRun) await app.loadActiveOrchestration();
   };
 
   app.closeOpenSpecPanel = function closeOpenSpecPanel({ restoreFocus = false } = {}) {
-    if (!elements.openSpecPanel || elements.openSpecPanel.hidden) return;
+    if (!elements.openSpecPanel || (elements.openSpecPanel.hidden && elements.openSpecRunPage?.hidden !== false)) return;
     elements.openSpecButton?.setAttribute("aria-expanded", "false");
     elements.codexView?.classList.remove("open-spec-open");
     app.syncBodySheetState?.();
@@ -56,9 +60,265 @@ export function installOpenSpec(app) {
     if (state.openSpecCloseTimer) windowRef.clearTimeout(state.openSpecCloseTimer);
     state.openSpecCloseTimer = windowRef.setTimeout(() => {
       state.openSpecCloseTimer = null;
-      if (!elements.codexView?.classList.contains("open-spec-open")) elements.openSpecPanel.hidden = true;
+      if (!elements.codexView?.classList.contains("open-spec-open")) {
+        elements.openSpecPanel.hidden = true;
+        if (elements.openSpecRunPage) elements.openSpecRunPage.hidden = true;
+      }
     }, 220);
     if (restoreFocus) elements.openSpecButton?.focus?.({ preventScroll: true });
+  };
+
+  app.orchestrationAvailable = function orchestrationAvailable() {
+    return app.isDesktopPluginEnabled?.("orchestration") === true;
+  };
+
+  app.openOrchestrationRunPage = function openOrchestrationRunPage() {
+    if (!state.orchestrationRun || !elements.openSpecRunPage) return;
+    elements.openSpecPanel.hidden = true;
+    elements.openSpecRunPage.hidden = false;
+    elements.openSpecRunPage.getBoundingClientRect?.();
+    elements.codexView?.classList.add("open-spec-open");
+    app.renderOpenSpecRunPage();
+  };
+
+  app.closeOrchestrationRunPage = function closeOrchestrationRunPage() {
+    if (!elements.openSpecRunPage) return;
+    elements.openSpecRunPage.hidden = true;
+    elements.openSpecPanel.hidden = false;
+    app.renderOpenSpecPanel();
+  };
+
+  app.backOpenSpecPlanning = function backOpenSpecPlanning() {
+    if (state.openSpecMode === "confirm") state.openSpecMode = "select";
+    else if (state.openSpecMode === "select") state.openSpecMode = "browse";
+    else return;
+    state.orchestrationError = "";
+    app.renderOpenSpecPanel();
+  };
+
+  app.enterOpenSpecOrchestrationSelection = function enterOpenSpecOrchestrationSelection() {
+    if (!app.orchestrationAvailable() || state.orchestrationBusy) return;
+    state.openSpecMode = "select";
+    state.orchestrationSelectedIds = new Set();
+    state.orchestrationOrder = [];
+    state.orchestrationError = "";
+    app.renderOpenSpecPanel();
+  };
+
+  app.cancelOpenSpecOrchestration = function cancelOpenSpecOrchestration() {
+    state.openSpecMode = "browse";
+    state.orchestrationSelectedIds = new Set();
+    state.orchestrationOrder = [];
+    state.orchestrationError = "";
+    app.renderOpenSpecPanel();
+  };
+
+  app.toggleOrchestrationChange = function toggleOrchestrationChange(changeId) {
+    const selected = new Set(state.orchestrationSelectedIds || []);
+    if (selected.has(changeId)) selected.delete(changeId);
+    else selected.add(changeId);
+    state.orchestrationSelectedIds = selected;
+    state.orchestrationOrder = [...selected];
+    app.renderOpenSpecPanel();
+  };
+
+  app.confirmOpenSpecOrchestrationSelection = function confirmOpenSpecOrchestrationSelection() {
+    if (!(state.orchestrationSelectedIds?.size > 0)) return;
+    state.openSpecMode = "confirm";
+    state.orchestrationOrder = (state.openSpecSummary?.changes || [])
+      .filter((change) => state.orchestrationSelectedIds.has(change.id) && app.orchestrationEligibleChange(change))
+      .map((change) => change.id);
+    app.renderOpenSpecPanel();
+  };
+
+  app.moveOrchestrationChange = function moveOrchestrationChange(changeId, direction) {
+    const order = [...state.orchestrationOrder];
+    const index = order.indexOf(changeId);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= order.length) return;
+    [order[index], order[nextIndex]] = [order[nextIndex], order[index]];
+    state.orchestrationOrder = order;
+    app.renderOpenSpecPanel();
+  };
+
+  app.startOpenSpecOrchestration = async function startOpenSpecOrchestration() {
+    if (state.orchestrationBusy || !state.orchestrationOrder.length) return;
+    state.orchestrationBusy = true;
+    state.orchestrationError = "";
+    app.renderOpenSpecPanel();
+    try {
+      const runtime = app.currentRuntimeDraft?.() || {};
+      const data = await app.apiPost("/api/codex/orchestrations", {
+        projectId: app.currentProjectId(),
+        targetAgentId: app.currentTargetAgentId?.() || "",
+        items: app.orchestrationItemsForOrder(),
+        runtimePolicy: {
+          backendId: runtime.backendId || "",
+          model: runtime.model || "",
+          permissionMode: runtime.permissionMode || "default",
+          maxConcurrency: app.orchestrationMaxConcurrency()
+        }
+      }, { timeoutMs: 45000 });
+      state.orchestrationRun = data.run || null;
+      state.openSpecMode = "browse";
+      await app.connectOrchestrationEvents();
+    } catch (error) {
+      state.orchestrationError = error.message;
+    } finally {
+      state.orchestrationBusy = false;
+      app.renderOpenSpecPanel();
+    }
+  };
+
+  app.orchestrationItemsForOrder = function orchestrationItemsForOrder() {
+    const byId = new Map((state.openSpecSummary?.changes || []).map((change) => [change.id, change]));
+    const selected = new Set(state.orchestrationOrder);
+    return state.orchestrationOrder.map((changeId) => {
+      const change = byId.get(changeId);
+      const explicit = Array.isArray(change?.dependsOn) ? change.dependsOn : [];
+      return { changeId, dependsOn: [...new Set(explicit.filter((dependency) => selected.has(dependency)))] };
+    });
+  };
+
+  app.orchestrationMaxConcurrency = function orchestrationMaxConcurrency() {
+    const advertised = Number(
+      state.codexAgentRuntime?.capabilities?.orchestration?.maxConcurrency ||
+      state.codexAgentRuntime?.sessionConcurrency ||
+      2
+    );
+    return Number.isFinite(advertised) ? Math.max(1, Math.min(8, Math.trunc(advertised))) : 1;
+  };
+
+  app.orchestrationEligibleChange = function orchestrationEligibleChange(change) {
+    if (!change || change.archived || ["archived", "complete", "completed"].includes(change.status)) return false;
+    const completed = Number(change.progress?.completedTasks || 0);
+    const total = Number(change.progress?.totalTasks || 0);
+    return !(total > 0 && completed >= total);
+  };
+
+  app.loadActiveOrchestration = async function loadActiveOrchestration() {
+    if (!app.orchestrationAvailable() || !app.currentProjectId()) return null;
+    try {
+      const query = new URLSearchParams({
+        projectId: app.currentProjectId(),
+        targetAgentId: app.currentTargetAgentId?.() || "",
+        active: "true",
+        limit: "1"
+      });
+      const data = await app.apiGet(`/api/codex/orchestrations?${query}`);
+      const run = data.items?.[0] || null;
+      if (run) {
+        state.orchestrationRun = run;
+        state.openSpecMode = "browse";
+        await app.connectOrchestrationEvents();
+      }
+      return run;
+    } catch {
+      return null;
+    }
+  };
+
+  app.connectOrchestrationEvents = async function connectOrchestrationEvents() {
+    app.stopOrchestrationEvents();
+    const runId = state.orchestrationRun?.id;
+    if (!runId || !app.orchestrationAvailable()) return;
+    try {
+      const ticket = await app.apiPost(`/api/codex/orchestrations/${encodeURIComponent(runId)}/events-ticket`, {});
+      const source = new windowRef.EventSource(`/api/codex/orchestrations/${encodeURIComponent(runId)}/events?ticket=${encodeURIComponent(ticket.ticket)}`);
+      state.orchestrationEventSource = source;
+      source.addEventListener("run", (event) => {
+        const payload = JSON.parse(event.data || "{}");
+        if (payload.run?.id === runId) {
+          state.orchestrationRun = payload.run;
+          app.renderOpenSpecPanel();
+          app.renderOpenSpecRunPage();
+        }
+      });
+      source.onerror = () => {
+        source.close();
+        if (state.orchestrationEventSource === source) state.orchestrationEventSource = null;
+        app.scheduleOrchestrationPoll();
+      };
+    } catch {
+      app.scheduleOrchestrationPoll();
+    }
+  };
+
+  app.scheduleOrchestrationPoll = function scheduleOrchestrationPoll() {
+    if (state.orchestrationPollTimer || !state.orchestrationRun?.id || !app.orchestrationAvailable()) return;
+    state.orchestrationPollTimer = windowRef.setTimeout(async () => {
+      state.orchestrationPollTimer = null;
+      try {
+        const data = await app.apiGet(`/api/codex/orchestrations/${encodeURIComponent(state.orchestrationRun.id)}`);
+        if (data.run) state.orchestrationRun = data.run;
+      } catch {
+        state.orchestrationRun = { ...state.orchestrationRun, stale: true };
+      }
+      app.renderOpenSpecPanel();
+      app.renderOpenSpecRunPage();
+      if (!["completed", "failed", "cancelled"].includes(state.orchestrationRun?.status)) app.scheduleOrchestrationPoll();
+    }, 5000);
+  };
+
+  app.stopOrchestrationEvents = function stopOrchestrationEvents() {
+    state.orchestrationEventSource?.close?.();
+    state.orchestrationEventSource = null;
+    if (state.orchestrationPollTimer) windowRef.clearTimeout(state.orchestrationPollTimer);
+    state.orchestrationPollTimer = null;
+  };
+
+  app.controlOrchestration = async function controlOrchestration(action) {
+    const runId = state.orchestrationRun?.id;
+    if (!runId || state.orchestrationBusy) return;
+    state.orchestrationBusy = true;
+    app.renderOpenSpecPanel();
+    try {
+      const data = await app.apiPost(`/api/codex/orchestrations/${encodeURIComponent(runId)}/${action}`, {});
+      state.orchestrationRun = data.run || state.orchestrationRun;
+    } catch (error) {
+      state.orchestrationError = error.message;
+    } finally {
+      state.orchestrationBusy = false;
+      app.renderOpenSpecPanel();
+      app.renderOpenSpecRunPage();
+    }
+  };
+
+  app.retryOrchestrationItem = async function retryOrchestrationItem(itemId) {
+    const runId = state.orchestrationRun?.id;
+    if (!runId || state.orchestrationBusy) return;
+    state.orchestrationBusy = true;
+    try {
+      const data = await app.apiPost(`/api/codex/orchestrations/${encodeURIComponent(runId)}/items/${encodeURIComponent(itemId)}/retry`, {});
+      state.orchestrationRun = data.run || state.orchestrationRun;
+    } catch (error) {
+      state.orchestrationError = error.message;
+      app.toast?.(error.message);
+    } finally {
+      state.orchestrationBusy = false;
+      app.renderOpenSpecPanel();
+      app.renderOpenSpecRunPage();
+    }
+  };
+
+  app.recoverOrchestrationItem = async function recoverOrchestrationItem(itemId) {
+    const runId = state.orchestrationRun?.id;
+    if (!runId || state.orchestrationBusy) return;
+    state.orchestrationBusy = true;
+    app.renderOpenSpecRunPage();
+    try {
+      const path = `/api/codex/orchestrations/${encodeURIComponent(runId)}/items/${encodeURIComponent(itemId)}/recover`;
+      const data = await app.apiPost(path, {});
+      state.orchestrationRun = data.run || state.orchestrationRun;
+      app.toast?.("Echo 已开始处理");
+    } catch (error) {
+      state.orchestrationError = error.message;
+      app.toast?.(error.message);
+    } finally {
+      state.orchestrationBusy = false;
+      app.renderOpenSpecPanel();
+      app.renderOpenSpecRunPage();
+    }
   };
 
   app.refreshOpenSpecSummary = async function refreshOpenSpecSummary() {
@@ -105,6 +365,15 @@ export function installOpenSpec(app) {
     const projectId = app.currentProjectId();
     const targetAgentId = app.currentTargetAgentId?.() || "";
     const projectKey = app.openSpecProjectKey();
+    if (!app.isDesktopPluginEnabled?.("open-spec")) {
+      state.openSpecSummary = null;
+      state.openSpecError = "";
+      state.openSpecStale = false;
+      state.openSpecProjectId = "";
+      app.renderOpenSpecPanel();
+      app.updateOpenSpecAvailability();
+      return null;
+    }
     if (!projectId) {
       state.openSpecSummary = null;
       state.openSpecError = "";
@@ -303,33 +572,89 @@ export function installOpenSpec(app) {
   app.updateOpenSpecAvailability = function updateOpenSpecAvailability() {
     if (!elements.openSpec || !elements.openSpecButton) return;
     const authenticated = typeof app.isLoggedIn === "function" ? app.isLoggedIn() : Boolean(state.token);
-    elements.openSpec.hidden = !authenticated;
-    elements.openSpecButton.disabled = Boolean(state.openSpecBusy) || !authenticated;
+    const enabled = app.isDesktopPluginEnabled?.("open-spec") === true;
+    elements.openSpec.hidden = !authenticated || !enabled;
+    elements.openSpecButton.disabled = Boolean(state.openSpecBusy) || !authenticated || !enabled;
     elements.openSpecButton.title = "Open Spec";
   };
 
   app.renderOpenSpecPanel = function renderOpenSpecPanel() {
     if (!elements.openSpecPanel) return;
     const workspace = app.currentWorkspace?.();
+    if (elements.openSpecOrchestrationActions) {
+      elements.openSpecOrchestrationActions.hidden = true;
+      elements.openSpecOrchestrationActions.innerHTML = "";
+    }
     const summary = state.openSpecSummary;
     const title = workspace ? app.workspaceDirectoryName?.(workspace) || workspace.label || workspace.id : "Open Spec";
     elements.openSpecPanel.classList.toggle("is-busy", Boolean(state.openSpecBusy));
     elements.openSpecPanel.classList.toggle("is-stale", Boolean(state.openSpecStale));
+    elements.openSpecPanel.dataset.mode = state.openSpecMode || "browse";
+    const planning = state.openSpecMode === "select" || state.openSpecMode === "confirm";
+    if (elements.openSpecBackButton) elements.openSpecBackButton.hidden = !planning;
+    if (elements.openSpecCloseButton) elements.openSpecCloseButton.hidden = planning;
     elements.openSpecTitle.textContent = title;
     elements.openSpecMeta.textContent = summary?.directoryName
       ? `${summary.directoryName}${state.openSpecStale ? " · 离线缓存" : ""}`
       : "当前工程";
     if (elements.openSpecExploreButton) {
+      elements.openSpecExploreButton.hidden = (state.openSpecMode || "browse") !== "browse";
       elements.openSpecExploreButton.disabled = Boolean(state.composerBusy) || !app.currentProjectId();
+    }
+    if (elements.openSpecOrchestrationButton) {
+      elements.openSpecOrchestrationButton.hidden = !app.orchestrationAvailable() || (state.openSpecMode || "browse") !== "browse";
+      elements.openSpecOrchestrationButton.disabled = Boolean(state.orchestrationBusy);
     }
     elements.openSpecRefreshButton.disabled = state.openSpecBusy || !app.currentProjectId() || !app.codexCommandsAvailable?.();
     app.renderOpenSpecStatus();
     app.renderOpenSpecOverview();
+    app.renderOrchestrationProgress();
     app.renderOpenSpecTimeline();
+  };
+
+  app.renderOrchestrationProgress = function renderOrchestrationProgress() {
+    const root = elements.openSpecRunProgress;
+    if (!root) return;
+    const run = state.orchestrationRun;
+    const visible = Boolean(run) && (state.openSpecMode || "browse") === "browse";
+    root.hidden = !visible;
+    if (!visible) {
+      root.innerHTML = "";
+      return;
+    }
+    const progress = run.progress || {};
+    const completed = Math.max(0, Number(progress.completed || 0) || 0);
+    const total = Math.max(completed, Number(progress.total || run.items?.length || 0) || 0);
+    const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+    root.className = `open-spec-run-progress is-${app.orchestrationRunStateClass(run.status)}`;
+    root.innerHTML = `
+      <button type="button" class="open-spec-run-progress-button" aria-label="查看编排详情">
+        <span class="open-spec-run-progress-copy">
+          <strong>${app.escapeHtml(run.title || "OpenSpec 编排")}</strong>
+          <small>${app.escapeHtml(app.orchestrationRunLabel(run.status))} · ${completed}/${total}</small>
+        </span>
+        <span class="open-spec-run-progress-track" aria-hidden="true"><i style="transform: scaleX(${percent / 100})"></i></span>
+        <span class="open-spec-run-progress-value">${percent}%</span>
+      </button>
+    `;
+    root.querySelector(".open-spec-run-progress-button")?.addEventListener("click", app.openOrchestrationRunPage);
   };
 
   app.renderOpenSpecStatus = function renderOpenSpecStatus() {
     if (!elements.openSpecStatus) return;
+    if (state.orchestrationError) {
+      elements.openSpecStatus.textContent = state.orchestrationError;
+      return;
+    }
+    if (state.openSpecMode === "select") {
+      const eligible = (state.openSpecSummary?.changes || []).filter(app.orchestrationEligibleChange).length;
+      elements.openSpecStatus.textContent = `${eligible} 项可编排 · 已选 ${state.orchestrationSelectedIds?.size || 0} 项`;
+      return;
+    }
+    if (state.openSpecMode === "confirm") {
+      elements.openSpecStatus.textContent = `最多同时执行 ${app.orchestrationMaxConcurrency()} 项`;
+      return;
+    }
     if (state.openSpecBusy) {
       elements.openSpecStatus.textContent = "读取 Open Spec...";
       return;
@@ -356,6 +681,7 @@ export function installOpenSpec(app) {
     if (!elements.openSpecOverview) return;
     elements.openSpecOverview.innerHTML = "";
     const summary = state.openSpecSummary;
+    if ((state.openSpecMode || "browse") !== "browse") return;
     if (!summary?.available) return;
     const overview = summary.overview || {};
     const percent = overview.percentComplete === null ? "—" : `${overview.percentComplete}%`;
@@ -380,6 +706,8 @@ export function installOpenSpec(app) {
     if (!elements.openSpecTimeline) return;
     elements.openSpecTimeline.innerHTML = "";
     const summary = state.openSpecSummary;
+    if (state.openSpecMode === "select") return app.renderOrchestrationSelection();
+    if (state.openSpecMode === "confirm") return app.renderOrchestrationConfirmation();
     if (!summary) {
       elements.openSpecTimeline.innerHTML = '<div class="open-spec-empty">选择工程后读取 Open Spec。</div>';
       return;
@@ -397,10 +725,165 @@ export function installOpenSpec(app) {
     }
   };
 
+  app.renderOrchestrationSelection = function renderOrchestrationSelection() {
+    const changes = (state.openSpecSummary?.changes || []).filter(app.orchestrationEligibleChange);
+    if (!changes.length) {
+      elements.openSpecTimeline.innerHTML = '<div class="orchestration-empty"><strong>没有待执行的 change</strong><span>已完成和已归档项目不会进入编排。</span></div>';
+      app.renderOrchestrationActions('<button type="button" class="secondary" data-orchestration-action="cancel">返回</button>');
+      return;
+    }
+    for (const change of changes) {
+      const row = document.createElement("label");
+      row.className = "orchestration-select-row";
+      const selected = state.orchestrationSelectedIds?.has(change.id);
+      const taskCount = Number(change.progress?.totalTasks || 0);
+      const taskMeta = taskCount ? `${Number(change.progress?.completedTasks || 0)}/${taskCount}` : "无任务清单";
+      row.innerHTML = `<input type="checkbox" ${selected ? "checked" : ""}><span><strong>${app.escapeHtml(change.title || change.id)}</strong><small>${app.escapeHtml(taskMeta)}</small></span><em>${app.escapeHtml(app.openSpecStatusLabel(change.status))}</em>`;
+      row.querySelector("input")?.addEventListener("change", () => app.toggleOrchestrationChange(change.id));
+      elements.openSpecTimeline.append(row);
+    }
+    app.renderOrchestrationActions(`
+      <button type="button" class="secondary" data-orchestration-action="cancel">取消</button>
+      <button type="button" class="primary" data-orchestration-action="next" ${state.orchestrationSelectedIds?.size ? "" : "disabled"}>下一步</button>
+    `);
+  };
+
+  app.renderOrchestrationConfirmation = function renderOrchestrationConfirmation() {
+    const byId = new Map((state.openSpecSummary?.changes || []).map((change) => [change.id, change]));
+    const items = app.orchestrationItemsForOrder();
+    const parallelCount = items.filter((item) => item.dependsOn.length === 0).length;
+    const summary = document.createElement("div");
+    summary.className = "orchestration-plan-summary";
+    summary.innerHTML = `<strong>${state.orchestrationOrder.length} 项任务</strong><span>${parallelCount} 项可立即启动 · ${Math.max(0, state.orchestrationOrder.length - parallelCount)} 项等待依赖 · 并发上限 ${app.orchestrationMaxConcurrency()}</span>`;
+    elements.openSpecTimeline.append(summary);
+    state.orchestrationOrder.forEach((changeId, index) => {
+      const change = byId.get(changeId);
+      const row = document.createElement("div");
+      row.className = "orchestration-order-row";
+      const dependencies = items.find((item) => item.changeId === changeId)?.dependsOn || [];
+      const dependencyNames = dependencies.map((id) => byId.get(id)?.title || id).join("、");
+      row.innerHTML = `<span>${index + 1}</span><strong>${app.escapeHtml(change?.title || changeId)}<small>${dependencies.length ? `等待 ${app.escapeHtml(dependencyNames)}` : "无依赖，可并行"}</small></strong><em class="orchestration-lane ${dependencies.length ? "is-blocked" : "is-parallel"}">${dependencies.length ? "依赖" : "并行"}</em>`;
+      elements.openSpecTimeline.append(row);
+    });
+    app.renderOrchestrationActions(`
+      <button type="button" class="secondary" data-orchestration-action="cancel">返回</button>
+      <button type="button" class="primary" data-orchestration-action="start" ${state.orchestrationBusy ? "disabled" : ""}>${state.orchestrationBusy ? "创建中" : "开始"}</button>
+    `);
+  };
+
+  app.renderOpenSpecRunPage = function renderOpenSpecRunPage() {
+    if (!elements.openSpecRunPage || elements.openSpecRunPage.hidden) return;
+    const run = state.orchestrationRun;
+    if (elements.openSpecRunMeta) elements.openSpecRunMeta.textContent = run?.title || "OpenSpec 编排";
+    if (elements.openSpecRunStatus) {
+      const progress = run?.progress || {};
+      elements.openSpecRunStatus.textContent = run
+        ? `${app.orchestrationRunLabel(run.status)} · ${progress.completed || 0}/${progress.total || run.items?.length || 0} 完成${run.stale ? " · 状态可能已过期" : ""}`
+        : "没有活跃编排";
+    }
+    app.renderOrchestrationRun({ timeline: elements.openSpecRunTimeline, actions: elements.openSpecRunActions });
+  };
+
+  app.renderOrchestrationRun = function renderOrchestrationRun(options = {}) {
+    const timeline = options.timeline || elements.openSpecRunTimeline || elements.openSpecTimeline;
+    const actions = options.actions || elements.openSpecRunActions || elements.openSpecOrchestrationActions;
+    if (!timeline) return;
+    timeline.innerHTML = "";
+    const run = state.orchestrationRun;
+    if (!run) {
+      timeline.innerHTML = '<div class="open-spec-empty">没有活跃编排。</div>';
+      app.renderOrchestrationActions('<button type="button" class="secondary" data-orchestration-action="browse">返回</button>', actions);
+      return;
+    }
+    const byId = new Map(run.items.map((item) => [item.changeId, item]));
+    const groups = [
+      ["待处理", run.items.filter((item) => item.status === "attention" || item.status === "failed")],
+      ["执行中", run.items.filter((item) => ["preparing", "implementing", "verifying", "integrating"].includes(item.status))],
+      ["等待依赖", run.items.filter((item) => item.status === "blocked")],
+      ["待启动", run.items.filter((item) => item.status === "queued")],
+      ["已完成", run.items.filter((item) => ["ready", "completed"].includes(item.status))],
+      ["已取消", run.items.filter((item) => item.status === "cancelled")]
+    ];
+    const appendGroup = (label, items) => {
+      if (!items.length) return;
+      const heading = document.createElement("div");
+      heading.className = "orchestration-group-label";
+      heading.textContent = label;
+      timeline.append(heading);
+      for (const item of items) {
+        const row = document.createElement("div");
+        row.className = `orchestration-run-row${item.status === "attention" || item.status === "failed" ? " needs-attention" : ""}`;
+        const dependencies = (item.dependsOn || []).filter((id) => !["ready", "completed"].includes(byId.get(id)?.status));
+        const dependencyReason = dependencies.length ? `等待 ${dependencies.map((id) => byId.get(id)?.title || id).join("、")}` : "";
+        const availableActions = new Set(item.availableActions || []);
+        const canRetry = availableActions.has("retry");
+        const canRecover = availableActions.has("recover");
+        const nextStep = !canRetry && !canRecover && (item.status === "attention" || item.status === "failed") ? "请查看详情或结束本批次。" : "";
+        const reasonText = [item.errorSummary || dependencyReason, nextStep].filter(Boolean).join(" ");
+        const reason = reasonText ? `<small>${app.escapeHtml(reasonText)}</small>` : "";
+        const recoveryAction = canRecover
+          ? '<button type="button" class="orchestration-recover">让 Echo 处理</button>'
+          : (canRetry ? '<button type="button" class="orchestration-retry">重试</button>' : "");
+        row.innerHTML = `<button type="button" class="orchestration-run-main"><span><strong>${app.escapeHtml(item.title || item.changeId)}</strong>${reason}</span><em>${app.escapeHtml(app.orchestrationItemLabel(item.status))}</em></button>${recoveryAction}`;
+        const sessionId = item.attempts?.at(-1)?.sessionId;
+        if (sessionId) row.querySelector(".orchestration-run-main")?.addEventListener("click", () => { app.closeOpenSpecPanel({ restoreFocus: false }); app.showCodexJob?.(sessionId); });
+        row.querySelector(".orchestration-retry")?.addEventListener("click", () => app.retryOrchestrationItem(item.id));
+        row.querySelector(".orchestration-recover")?.addEventListener("click", () => app.recoverOrchestrationItem(item.id));
+        timeline.append(row);
+      }
+    };
+    for (const [label, items] of groups) appendGroup(label, items);
+    const terminal = ["completed", "failed", "cancelled"].includes(run.status);
+    const runActions = new Set(run.availableActions || []);
+    const canFinish = runActions.has("finish");
+    const stateControl = runActions.has("resume")
+      ? '<button type="button" class="secondary" data-orchestration-action="resume">继续</button>'
+      : (runActions.has("pause") ? '<button type="button" class="secondary" data-orchestration-action="pause">暂停</button>' : "");
+    app.renderOrchestrationActions(terminal
+      ? '<button type="button" class="secondary" data-orchestration-action="browse">返回</button>'
+      : `<button type="button" class="secondary" data-orchestration-action="browse">返回</button>${canFinish ? '<button type="button" class="secondary" data-orchestration-action="finish">结束本批次</button>' : ""}${stateControl}`, actions);
+  };
+
+  app.renderOrchestrationActions = function renderOrchestrationActions(html, root = elements.openSpecOrchestrationActions) {
+    if (!root) return;
+    root.hidden = false;
+    root.innerHTML = html;
+    for (const button of root.querySelectorAll("[data-orchestration-action]")) {
+      button.addEventListener("click", () => {
+        const action = button.dataset.orchestrationAction;
+        if (action === "cancel") app.cancelOpenSpecOrchestration();
+        else if (action === "next") app.confirmOpenSpecOrchestrationSelection();
+        else if (action === "start") app.startOpenSpecOrchestration();
+        else if (action === "browse") app.closeOrchestrationRunPage();
+        else if (action === "cancel-run") app.controlOrchestration("cancel");
+        else if (action === "finish") {
+          const confirmed = !windowRef.confirm || windowRef.confirm("结束后 Echo 将停止自动推进，但会保留 Session、Worktree 和验收记录。确定结束本批次？");
+          if (confirmed) app.controlOrchestration("finish");
+        }
+        else app.controlOrchestration(action);
+      });
+    }
+  };
+
+  app.orchestrationItemLabel = function orchestrationItemLabel(status) {
+    return ({ queued: "等待", blocked: "等待", preparing: "准备中", implementing: "执行中", verifying: "验收中", ready: "已提交", integrating: "集成中", completed: "完成", attention: "待处理", failed: "待处理", cancelled: "已取消" })[status] || "等待";
+  };
+
+  app.orchestrationRunLabel = function orchestrationRunLabel(status) {
+    return ({ queued: "等待开始", running: "执行中", paused: "已暂停", attention: "需要处理", integrating: "自动合入中", completed: "已合入", failed: "执行失败", cancelled: "已取消" })[status] || "执行中";
+  };
+
+  app.orchestrationRunStateClass = function orchestrationRunStateClass(status) {
+    if (status === "completed") return "complete";
+    if (["attention", "failed"].includes(status)) return "attention";
+    if (status === "cancelled") return "cancelled";
+    return "active";
+  };
+
   app.renderOpenSpecChange = function renderOpenSpecChange(change) {
     const details = document.createElement("details");
     details.className = `open-spec-change open-spec-change-${app.openSpecStatusClass(change.status)}`;
-    details.open = change.status === "in-progress";
+    details.open = false;
     const isArchived = Boolean(change.archived || change.status === "archived");
     const percent = Math.max(0, Math.min(100, change.progress.percent === null ? 0 : change.progress.percent));
     const menuDisabled = state.openSpecActionBusy ? " disabled" : "";
@@ -414,35 +897,28 @@ export function installOpenSpec(app) {
           <span class="open-spec-change-title-row">
             <strong>${app.escapeHtml(change.title || change.id)}</strong>
           </span>
-          <span>${app.escapeHtml(change.id)}</span>
         </span>
-        <span class="open-spec-change-actions">
+        <span class="open-spec-change-state">${app.escapeHtml(app.openSpecStatusLabel(change.status))}</span>
+      </summary>
+      <div class="open-spec-change-body">
+        <div class="open-spec-change-detail-head">
+          <span class="open-spec-change-id">${app.escapeHtml(change.id)}</span>
           <button class="open-spec-change-copy-button" type="button" aria-label="复制 change ID" title="复制 change ID">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M8 7.5A2.5 2.5 0 0 1 10.5 5h6A2.5 2.5 0 0 1 19 7.5v6A2.5 2.5 0 0 1 16.5 16h-6A2.5 2.5 0 0 1 8 13.5v-6Z" />
               <path d="M6 8.5v7A2.5 2.5 0 0 0 8.5 18h7" />
             </svg>
           </button>
-          <span class="open-spec-change-menu">
-            <button class="open-spec-change-menu-button" type="button" aria-label="操作 ${app.escapeHtml(change.id)}" title="操作 change" aria-expanded="false"${menuDisabled}>
-              <span>${state.openSpecActionBusy === change.id ? "处理中" : "操作"}</span>
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="m7 10 5 5 5-5" />
-              </svg>
-            </button>
-            <span class="open-spec-change-menu-popover" role="menu">
-              <button type="button" role="menuitem" data-open-spec-change-action="apply"${menuDisabled}>Apply</button>
-              <button type="button" role="menuitem" data-open-spec-change-action="sync"${menuDisabled}>Sync</button>
-              <button type="button" role="menuitem" data-open-spec-change-action="validate"${menuDisabled}>Validate</button>
-              <button type="button" role="menuitem" data-open-spec-change-action="archive"${archiveDisabled}>Archive</button>
-            </span>
-          </span>
-        </span>
-      </summary>
-      <div class="open-spec-change-body">
+        </div>
         ${excerpt ? `<p>${app.escapeHtml(excerpt)}</p>` : ""}
         ${specs.length ? `<div class="open-spec-tags">${specs.map((spec) => `<span>${app.escapeHtml(spec)}</span>`).join("")}</div>` : ""}
         <div class="open-spec-task-groups"></div>
+        <div class="open-spec-change-detail-actions" aria-label="Change 操作">
+          <button type="button" data-open-spec-change-action="apply"${menuDisabled}>Apply</button>
+          <button type="button" data-open-spec-change-action="sync"${menuDisabled}>Sync</button>
+          <button type="button" data-open-spec-change-action="validate"${menuDisabled}>Validate</button>
+          <button type="button" data-open-spec-change-action="archive"${archiveDisabled}>Archive</button>
+        </div>
       </div>
     `;
     const groupsRoot = details.querySelector(".open-spec-task-groups");
@@ -456,13 +932,18 @@ export function installOpenSpec(app) {
     details.querySelector(".open-spec-change-copy-button")?.addEventListener("click", (event) => {
       app.copyOpenSpecChangeId(change.id, event);
     });
-    details.querySelector(".open-spec-change-menu-button")?.addEventListener("click", (event) => {
-      app.toggleOpenSpecChangeMenu(details, event);
-    });
     for (const button of details.querySelectorAll("[data-open-spec-change-action]")) {
       button.addEventListener("click", (event) => app.runOpenSpecChangeAction(change, button.dataset.openSpecChangeAction, event));
     }
     return details;
+  };
+
+  app.openSpecStatusLabel = function openSpecStatusLabel(status) {
+    const normalized = String(status || "").trim().toLowerCase();
+    if (normalized === "complete") return "完成";
+    if (normalized === "archived") return "归档";
+    if (normalized === "in-progress") return "进行中";
+    return "计划";
   };
 
   app.toggleOpenSpecChangeMenu = function toggleOpenSpecChangeMenu(details, event) {
@@ -625,7 +1106,7 @@ export function installOpenSpec(app) {
   const previousRefreshCodex = app.refreshCodex;
   app.refreshCodex = async function refreshCodexWithOpenSpec(options = {}) {
     await previousRefreshCodex(options);
-    if (!app.isLoggedIn?.() || !state.token || !app.currentProjectId()) {
+    if (!app.canUseWorkbench?.() || !app.currentProjectId()) {
       app.updateOpenSpecAvailability();
       return;
     }
@@ -648,6 +1129,16 @@ export function installOpenSpec(app) {
 
   const previousHandleGlobalKeydown = app.handleGlobalKeydown;
   app.handleGlobalKeydown = function handleGlobalKeydownWithOpenSpec(event) {
+    if (event.key === "Escape" && elements.openSpecRunPage?.hidden === false) {
+      event.preventDefault();
+      app.closeOrchestrationRunPage();
+      return;
+    }
+    if (event.key === "Escape" && ["select", "confirm"].includes(state.openSpecMode)) {
+      event.preventDefault();
+      app.backOpenSpecPlanning();
+      return;
+    }
     if (event.key === "Escape" && elements.openSpecPanel && !elements.openSpecPanel.hidden) {
       event.preventDefault();
       app.closeOpenSpecPanel({ restoreFocus: true });
@@ -671,11 +1162,16 @@ export function installOpenSpec(app) {
   };
 
   elements.openSpecButton?.addEventListener("click", app.toggleOpenSpecPanel);
+  elements.openSpecOrchestrationButton?.addEventListener("click", app.enterOpenSpecOrchestrationSelection);
   elements.openSpecExploreButton?.addEventListener("click", app.prefillOpenSpecExplorePrompt);
   elements.openSpecRefreshButton?.addEventListener("click", app.refreshOpenSpecSummary);
   elements.openSpecCloseButton?.addEventListener("click", () => app.closeOpenSpecPanel({ restoreFocus: true }));
+  elements.openSpecBackButton?.addEventListener("click", app.backOpenSpecPlanning);
+  elements.openSpecRunBackButton?.addEventListener("click", app.closeOrchestrationRunPage);
+  elements.openSpecRunCloseButton?.addEventListener("click", () => app.closeOpenSpecPanel({ restoreFocus: true }));
 
   windowRef.addEventListener("resize", () => {
     if (!elements.openSpecPanel?.hidden) app.renderOpenSpecPanel();
+    if (!elements.openSpecRunPage?.hidden) app.renderOpenSpecRunPage();
   });
 }

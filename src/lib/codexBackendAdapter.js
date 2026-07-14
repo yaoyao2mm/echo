@@ -5,6 +5,7 @@ import { publicCodexRuntime } from "./codexRunner.js";
 import { normalizeSupportedModels } from "./codexRuntime.js";
 
 const codexCapabilities = {
+  commands: ["start", "message", "stop", "compact", "archive"],
   supports: {
     attachments: true,
     cancellation: true,
@@ -13,7 +14,8 @@ const codexCapabilities = {
     approvalRequests: true,
     interactionRequests: true,
     gitSummary: true,
-    worktree: true
+    worktree: true,
+    threadArchive: true
   }
 };
 

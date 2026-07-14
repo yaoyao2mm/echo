@@ -31,6 +31,10 @@ const settingsKey = crypto.randomBytes(16).toString("hex");
 const fields = [
   { key: "ECHO_RELAY_URL", section: "connection", type: "text" },
   { key: "ECHO_TOKEN", section: "connection", type: "secret" },
+  { key: "ECHO_AGENT_TOKEN", section: "connection", type: "secret" },
+  { key: "ECHO_AGENT_ID", section: "connection", type: "text" },
+  { key: "ECHO_AGENT_DISPLAY_NAME", section: "connection", type: "text" },
+  { key: "ECHO_AGENT_OWNER_USERNAME", section: "connection", type: "text" },
 
   { key: "ECHO_PROXY_URL", section: "network", type: "text" },
   { key: "ECHO_PROXY_FALLBACK_DIRECT", section: "network", type: "boolean", defaultValue: "true" },
@@ -174,8 +178,14 @@ app.post("/api/test/refine", async (req, res) => {
 
 app.post("/api/desktop/restart", async (req, res) => {
   try {
-    const result = await runCommand("bash", ["scripts/macos-desktop-agent.sh", "restart"], 20000);
-    res.json({ ok: result.code === 0, ...result });
+    notifyDesktopAgentRestart();
+    res.json({
+      ok: true,
+      code: 0,
+      stdout: "Desktop app is restarting the app-managed desktop agent.",
+      stderr: "",
+      restartRequired: true
+    });
   } catch (error) {
     handleError(res, error);
   }
@@ -445,18 +455,19 @@ async function testLocalRefine(sample) {
 }
 
 async function testRelayRefine(env, sample) {
-  if (!env.ECHO_TOKEN) {
+  const token = desktopAgentToken(env);
+  if (!token) {
     return {
       code: 1,
       stdout: "",
-      stderr: "Missing ECHO_TOKEN for relay refine test."
+      stderr: "Missing ECHO_AGENT_TOKEN for relay refine test."
     };
   }
 
   try {
     const statusResponse = await httpFetch(`${trimTrailingSlash(env.ECHO_RELAY_URL)}/api/agent/ping`, {
       headers: {
-        "X-Echo-Token": env.ECHO_TOKEN
+        "X-Echo-Agent-Token": token
       },
       timeoutMs: 15000
     });
@@ -473,7 +484,7 @@ async function testRelayRefine(env, sample) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Echo-Token": env.ECHO_TOKEN
+        "X-Echo-Agent-Token": token
       },
       body: JSON.stringify({
         rawText: sample,
@@ -521,7 +532,7 @@ async function runCommand(command, args, timeoutMs) {
       args,
       {
         cwd: rootDir,
-        env: { ...process.env, ...env },
+        env: buildDesktopCommandEnv(env),
         timeout: timeoutMs,
         maxBuffer: 1024 * 1024
       },
@@ -536,6 +547,50 @@ async function runCommand(command, args, timeoutMs) {
   });
 }
 
+function buildDesktopCommandEnv(env = {}) {
+  const next = { ...process.env, ...env };
+  const home = next.HOME || os.homedir();
+  return {
+    ...next,
+    HOME: home,
+    USER: next.USER || process.env.USER || "",
+    LOGNAME: next.LOGNAME || process.env.LOGNAME || process.env.USER || "",
+    SHELL: next.SHELL || "/bin/zsh",
+    PATH: normalizeDesktopPath(next.PATH, home),
+    LANG: next.LANG || "en_US.UTF-8"
+  };
+}
+
+function normalizeDesktopPath(value, home) {
+  const segments = String(value || "")
+    .split(path.delimiter)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  for (const segment of defaultDesktopPathSegments(home)) {
+    if (!segments.includes(segment)) segments.push(segment);
+  }
+
+  return segments.join(path.delimiter);
+}
+
+function defaultDesktopPathSegments(home) {
+  return [
+    path.join(home, ".local", "bin"),
+    path.join(home, "Library", "pnpm"),
+    path.join(home, ".cargo", "bin"),
+    path.join(home, ".bun", "bin"),
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin"
+  ];
+}
+
 async function buildHealth(env) {
   const [agent, codex, claude, workspaces, relay] = await Promise.all([
     checkAgentStatus(),
@@ -548,9 +603,10 @@ async function buildHealth(env) {
   return {
     generatedAt: new Date().toISOString(),
     connection: {
-      ok: Boolean(env.ECHO_RELAY_URL && env.ECHO_TOKEN),
+      ok: Boolean(env.ECHO_RELAY_URL && desktopAgentToken(env)),
       relayUrl: env.ECHO_RELAY_URL || "",
       tokenSet: Boolean(env.ECHO_TOKEN),
+      agentTokenSet: Boolean(desktopAgentToken(env)),
       proxy: env.ECHO_PROXY_URL || "direct"
     },
     agent,
@@ -562,30 +618,12 @@ async function buildHealth(env) {
 }
 
 async function checkAgentStatus() {
-  if (process.platform !== "darwin") {
-    const appAgent = await findDesktopAgentProcess();
-    return appAgent || { ok: false, status: "unsupported", detail: "Agent status check is implemented for macOS and app-managed agents." };
-  }
-
-  const result = await runCommand("launchctl", ["print", `gui/${process.getuid()}/com.echo.voice.desktop-agent`], 5000);
-  const state = result.stdout.match(/state = ([^\n]+)/)?.[1]?.trim() || "";
-  const pid = result.stdout.match(/\bpid = (\d+)/)?.[1] || "";
-  const ok = result.code === 0 && state === "running";
-  if (ok) {
-    return {
-      ok: true,
-      status: "running",
-      detail: `LaunchAgent pid ${pid || "unknown"}`
-    };
-  }
-
   const appAgent = await findDesktopAgentProcess();
   if (appAgent) return appAgent;
-
   return {
     ok: false,
     status: "not running",
-    detail: result.stderr || result.stdout || "No LaunchAgent or app-managed agent is running."
+    detail: "No app-managed desktop agent is running. Open the Echo desktop app to start it."
   };
 }
 
@@ -595,7 +633,7 @@ async function findDesktopAgentProcess() {
   const normalizedRoot = rootDir.replaceAll("\\", "/");
   const line = result.stdout
     .split(/\r?\n/)
-    .find((item) => item.replaceAll("\\", "/").includes(`${normalizedRoot}/src/desktop-agent.js`));
+    .find((item) => item.replaceAll("\\", "/").includes(`${normalizedRoot}/src/desktop-agent.js`) && !/^\s*\d+\s+1\s/.test(item));
   if (!line) return null;
   const pid = line.trim().match(/^(\d+)/)?.[1] || "unknown";
   return {
@@ -712,11 +750,12 @@ async function checkWorkspaces(env) {
 }
 
 async function checkRelayCodexStatus(env) {
-  if (!env.ECHO_RELAY_URL || !env.ECHO_TOKEN) {
+  const token = desktopAgentToken(env);
+  if (!env.ECHO_RELAY_URL || !token) {
     return {
       ok: false,
       status: "missing config",
-      detail: "Set ECHO_RELAY_URL and ECHO_TOKEN.",
+      detail: "Set ECHO_RELAY_URL and ECHO_AGENT_TOKEN.",
       codex: null
     };
   }
@@ -724,7 +763,7 @@ async function checkRelayCodexStatus(env) {
   try {
     const response = await httpFetch(`${trimTrailingSlash(env.ECHO_RELAY_URL)}/api/agent/ping`, {
       headers: {
-        "X-Echo-Token": env.ECHO_TOKEN
+        "X-Echo-Agent-Token": token
       },
       timeoutMs: 15000
     });
@@ -1000,6 +1039,10 @@ function notifyDesktopShellUpdate() {
   }
 }
 
+function notifyDesktopAgentRestart() {
+  console.log("ECHO_DESKTOP_AGENT_RESTART_REQUESTED");
+}
+
 function trimTrailingSlash(value) {
   return String(value || "").replace(/\/+$/, "");
 }
@@ -1011,6 +1054,10 @@ function buildMobileUrl(env) {
   return url.toString();
 }
 
+function desktopAgentToken(env = {}) {
+  return String(env.ECHO_AGENT_TOKEN || env.ECHO_TOKEN || "").trim();
+}
+
 function redact(text, env = process.env) {
   let output = String(text || "");
   for (const key of secretKeys) {
@@ -1019,6 +1066,7 @@ function redact(text, env = process.env) {
   }
   return output
     .replace(/(ECHO_TOKEN[= ]+)[^\s]+/g, "$1<set>")
+    .replace(/(ECHO_AGENT_TOKEN[= ]+)[^\s]+/g, "$1<set>")
     .replace(/((?:OPENAI|LLM|METIO|VOLCENGINE)[A-Z0-9_]*API_KEY[= ]+)[^\s]+/g, "$1<set>")
     .trim();
 }

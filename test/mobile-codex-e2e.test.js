@@ -87,7 +87,7 @@ rl.on("line", (line) => {
     const text = message.params.input?.find((item) => item.type === "text")?.text || "";
     const localImagePaths = (message.params.input || []).filter((item) => item.type === "localImage").map((item) => item.path);
     const referencedImagePaths = Array.from(text.matchAll(/local file: (.+)/g)).map((match) => match[1].trim());
-    const userText = text.split("\\n[Echo image attachments]")[0].trim();
+    const userText = text.split(/\\n\\[Echo (?:image )?attachments\\]/)[0].trim();
     const imageCount = referencedImagePaths.length;
     fs.writeFileSync(
       ${JSON.stringify(capturePath)},
@@ -95,7 +95,8 @@ rl.on("line", (line) => {
         input: message.params.input,
         localImagePaths,
         referencedImagePaths,
-        referencedImageSizes: referencedImagePaths.map((filePath) => fs.statSync(filePath).size)
+        referencedImageSizes: referencedImagePaths.map((filePath) => fs.statSync(filePath).size),
+        referencedFileContents: referencedImagePaths.map((filePath) => fs.readFileSync(filePath, "utf8"))
       }, null, 2),
       "utf8"
     );
@@ -104,6 +105,7 @@ rl.on("line", (line) => {
     send({ method: "turn/started", params: { threadId: message.params.threadId, turn } });
     send({ method: "item/agentMessage/delta", params: { threadId: message.params.threadId, turnId: turn.id, itemId: "msg_1", delta: "Fake interactive Codex finished: " } });
     send({ method: "item/completed", params: { threadId: message.params.threadId, turnId: turn.id, item: { type: "agentMessage", id: "msg_1", text: "Fake interactive Codex finished: " + userText + " [images:" + imageCount + "]" } } });
+    send({ method: "thread/tokenUsage/updated", params: { threadId: message.params.threadId, turnId: turn.id, tokenUsage: { total: { totalTokens: 92000 }, last: { totalTokens: 90000 }, modelContextWindow: 100000 } } });
     send({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { ...turn, status: "completed", completedAt: 2 } } });
     return;
   }
@@ -128,6 +130,7 @@ process.env.ECHO_AUTH_ENABLED = "false";
 process.env.ECHO_CODEX_APP_PATH = fakeCodexPath;
 process.env.ECHO_CODEX_COMMAND = fakeCodexPath;
 process.env.ECHO_CODEX_WORKSPACES = `e2e=${workspacePath}`;
+process.env.ECHO_CODEX_MANAGED_WORKSPACES_FILE = path.join(tempRoot, "managed-workspaces.json");
 process.env.ECHO_CODEX_TIMEOUT_MS = "5000";
 process.env.ECHO_CODEX_LEASE_MS = "60000";
 
@@ -197,8 +200,8 @@ test("mobile relay flow runs an interactive Codex session end to end", async () 
     assert.equal(capture.input.some((item) => item.type === "localImage"), false);
     assert.equal(capture.referencedImagePaths.length, 1);
     assert.equal(capture.referencedImageSizes[0] > 0, true);
-    assert.equal(capture.referencedImagePaths[0].startsWith(path.join(workspacePath, ".echo-codex-attachments")), true);
-    assert.equal(capture.referencedImagePaths[0].startsWith(path.join(tempHome, ".echo-voice", "codex-attachments")), false);
+    assert.equal(capture.referencedImagePaths[0].startsWith(path.join(tempHome, ".echo-voice", "codex-attachment-staging", agent.id)), true);
+    assert.equal(capture.referencedImagePaths[0].startsWith(workspacePath), false);
 
     queue.compactCodexSession(created.id, { automatic: true, reason: "e2e-threshold" });
     const compactCommand = await queue.waitForCodexSessionCommand({ waitMs: 2000, agent });
@@ -212,6 +215,56 @@ test("mobile relay flow runs an interactive Codex session end to end", async () 
       return session?.events.some((event) => event.raw?.params?.item?.type === "contextCompaction") ? session : null;
     });
     assert.equal(compacted.status, "active");
+  } finally {
+    runtime.stop();
+  }
+});
+
+test("mobile relay flow materializes file attachments for Codex", async () => {
+  store.resetStoreForTest();
+  resetFakeCodexArtifacts();
+
+  const agent = {
+    id: "agent-file-e2e",
+    workspaces: runner.publicWorkspaces(),
+    runtime: runner.publicCodexRuntime()
+  };
+  const runtime = new CodexInteractiveRuntime({
+    agentId: agent.id,
+    onEvents: (id, events) => {
+      const ok = queue.appendCodexSessionEvents(id, events, { agentId: agent.id });
+      assert.equal(ok, true);
+    }
+  });
+  try {
+    queue.updateCodexAgent(agent);
+    const csv = "name,value\nalpha,1\n";
+    const created = queue.createCodexSession({
+      projectId: "e2e",
+      prompt: "请分析这个 CSV",
+      attachments: [{ type: "file", url: `data:text/csv;base64,${Buffer.from(csv).toString("base64")}`, name: "metrics.csv", mimeType: "text/csv", sizeBytes: csv.length }]
+    });
+
+    const command = await queue.waitForCodexSessionCommand({ waitMs: 2000, agent });
+    assert.equal(command.sessionId, created.id);
+    assert.equal(command.payload.attachments[0].type, "file");
+    const result = await runtime.handleCommand(command);
+    assert.equal(result.ok, true);
+    assert.equal(queue.completeCodexSessionCommand(command.id, result, { agentId: agent.id }), true);
+
+    await waitForSessionState(() => {
+      const session = queue.getCodexSession(created.id);
+      return session?.events.some((event) => event.type === "turn/completed") ? session : null;
+    });
+
+    const capture = JSON.parse(fs.readFileSync(capturePath, "utf8"));
+    assert.equal(capture.input.some((item) => item.type === "localImage"), false);
+    assert.equal(capture.referencedImagePaths.length, 1);
+    assert.equal(path.basename(capture.referencedImagePaths[0]).startsWith("metrics-"), true);
+    assert.equal(path.extname(capture.referencedImagePaths[0]), ".csv");
+    assert.equal(capture.referencedFileContents[0], csv);
+    await waitForSessionState(() => fs.existsSync(capture.referencedImagePaths[0]) ? null : true);
+    assert.equal(fs.existsSync(capture.referencedImagePaths[0]), false);
   } finally {
     runtime.stop();
   }
@@ -303,7 +356,19 @@ test("mobile relay flow recovers when an old Codex thread disappears", async () 
 
     runtime = createRuntime();
     queue.enqueueCodexSessionMessage(created.id, { text: "继续修复移动端发送消息报错" });
-    const messageCommand = await queue.waitForCodexSessionCommand({ waitMs: 2000, agent });
+    let messageCommand = await queue.waitForCodexSessionCommand({ waitMs: 2000, agent });
+    if (messageCommand.type === "compact") {
+      assert.equal(messageCommand.payload.automatic, true);
+      let compactResult;
+      try {
+        compactResult = await runtime.handleCommand(messageCommand);
+      } catch (error) {
+        compactResult = { ok: false, error: error.message };
+      }
+      assert.equal(queue.completeCodexSessionCommand(messageCommand.id, compactResult, { agentId: agent.id }), true);
+      assert.equal(queue.getCodexSession(created.id).status, "active");
+      messageCommand = await queue.waitForCodexSessionCommand({ waitMs: 2000, agent });
+    }
     assert.equal(messageCommand.type, "message");
     assert.equal(messageCommand.appThreadId, "thr_mobile_e2e_1");
     assert.equal(messageCommand.payload.history.some((message) => message.text.includes("先理解这个移动端问题")), true);

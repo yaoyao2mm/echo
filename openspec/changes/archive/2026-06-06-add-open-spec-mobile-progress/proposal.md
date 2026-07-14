@@ -21,6 +21,6 @@ None.
 ## Impact
 
 - Frontend: `public/index.html`, `public/app/index.js`, a new PWA module for Open Spec state/rendering, and mobile/workbench styles.
-- Relay and desktop agent: new queued request type/API for Open Spec summaries, implemented with the same workspace allowlist constraints as file browsing.
+- Relay and desktop agent: new queued request type/API for Open Spec summaries, implemented with the same target-agent/workspace ownership constraints as file browsing.
 - Libraries: a new OpenSpec summary parser/reader module with focused unit tests.
 - Tests: Node tests for parser behavior, workspace safety, relay/desktop request routing, and PWA rendering/caching. E2E tests remain out of scope unless explicitly requested.

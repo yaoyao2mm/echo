@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { CodexAppServerClient, buildUserInputs } from "../src/lib/codexAppServerClient.js";
-import { buildCodexEnv } from "../src/lib/codexRunner.js";
+import { buildCodexEnv, readCodexRuntimeConfig } from "../src/lib/codexRunner.js";
 
 test("CodexAppServerClient speaks newline-delimited app-server JSON-RPC", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-app-server-client-"));
@@ -91,7 +91,7 @@ test("buildCodexEnv exposes API key stored by codex login --with-api-key", () =>
   try {
     process.env.HOME = tempRoot;
     delete process.env.CODEX_HOME;
-    delete process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-test-from-old-env";
 
     const env = buildCodexEnv();
     assert.equal(env.CODEX_HOME, codexHome);
@@ -104,4 +104,123 @@ test("buildCodexEnv exposes API key stored by codex login --with-api-key", () =>
     if (previousOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = previousOpenAiApiKey;
   }
+});
+
+test("buildCodexEnv does not leak Echo model provider overrides into Codex", () => {
+  const previousEnv = {
+    HOME: process.env.HOME,
+    CODEX_HOME: process.env.CODEX_HOME,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+    LLM_BASE_URL: process.env.LLM_BASE_URL,
+    LLM_API_KEY: process.env.LLM_API_KEY,
+    LLM_MODEL: process.env.LLM_MODEL,
+    ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+    CLAUDE_CODE_SUBAGENT_MODEL: process.env.CLAUDE_CODE_SUBAGENT_MODEL,
+    METIO_VOLCENGINE_CODING_API_KEY: process.env.METIO_VOLCENGINE_CODING_API_KEY,
+    VOLCENGINE_CODING_API_KEY: process.env.VOLCENGINE_CODING_API_KEY,
+    ECHO_CLAUDE_BASE_URL: process.env.ECHO_CLAUDE_BASE_URL,
+    ECHO_VOLCENGINE_CODING_ENABLED: process.env.ECHO_VOLCENGINE_CODING_ENABLED
+  };
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-codex-clean-env-"));
+  const codexHome = path.join(tempRoot, ".codex");
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.writeFileSync(path.join(codexHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "sk-test-from-auth" }), "utf8");
+
+  try {
+    process.env.HOME = tempRoot;
+    delete process.env.CODEX_HOME;
+    delete process.env.OPENAI_API_KEY;
+    process.env.OPENAI_BASE_URL = "https://old-openai-compatible.example/v1";
+    process.env.LLM_BASE_URL = "https://old-llm.example/v1";
+    process.env.LLM_API_KEY = "old-llm-key";
+    process.env.LLM_MODEL = "old-model";
+    process.env.ANTHROPIC_BASE_URL = "https://old-anthropic.example";
+    process.env.ANTHROPIC_API_KEY = "old-anthropic-key";
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL = "old-subagent";
+    process.env.METIO_VOLCENGINE_CODING_API_KEY = "old-volcengine-key";
+    process.env.VOLCENGINE_CODING_API_KEY = "old-volcengine-key";
+    process.env.ECHO_CLAUDE_BASE_URL = "https://old-echo-claude.example";
+    process.env.ECHO_VOLCENGINE_CODING_ENABLED = "true";
+
+    const env = buildCodexEnv();
+    assert.equal(env.CODEX_HOME, codexHome);
+    assert.equal(env.OPENAI_API_KEY, "sk-test-from-auth");
+    assert.equal(env.OPENAI_BASE_URL, undefined);
+    assert.equal(env.LLM_BASE_URL, undefined);
+    assert.equal(env.LLM_API_KEY, undefined);
+    assert.equal(env.LLM_MODEL, undefined);
+    assert.equal(env.ANTHROPIC_BASE_URL, undefined);
+    assert.equal(env.ANTHROPIC_API_KEY, undefined);
+    assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, undefined);
+    assert.equal(env.METIO_VOLCENGINE_CODING_API_KEY, undefined);
+    assert.equal(env.VOLCENGINE_CODING_API_KEY, undefined);
+    assert.equal(env.ECHO_CLAUDE_BASE_URL, undefined);
+    assert.equal(env.ECHO_VOLCENGINE_CODING_ENABLED, undefined);
+  } finally {
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("buildCodexEnv ignores process OPENAI_API_KEY when Codex auth is missing", () => {
+  const previousEnv = {
+    HOME: process.env.HOME,
+    CODEX_HOME: process.env.CODEX_HOME,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY
+  };
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-codex-env-no-auth-"));
+  try {
+    process.env.HOME = tempRoot;
+    delete process.env.CODEX_HOME;
+    process.env.OPENAI_API_KEY = "sk-old-process-env";
+
+    const env = buildCodexEnv();
+    assert.equal(env.CODEX_HOME, path.join(tempRoot, ".codex"));
+    assert.equal(env.OPENAI_API_KEY, "");
+  } finally {
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("readCodexRuntimeConfig reports non-secret Codex config summary and fingerprint", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "echo-codex-runtime-config-"));
+  const codexHome = path.join(tempRoot, ".codex");
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.writeFileSync(
+    path.join(codexHome, "config.toml"),
+    [
+      'model_provider = "ai"',
+      'model = "gpt-5.5"',
+      'model_reasoning_effort = "xhigh"',
+      "",
+      "[model_providers.ai]",
+      'name = "ai"',
+      'base_url = "https://api.example.test"',
+      'wire_api = "responses"',
+      "requires_openai_auth = true",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(path.join(codexHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "sk-secret" }), "utf8");
+
+  const config = readCodexRuntimeConfig({ HOME: tempRoot });
+  assert.equal(config.codexHome, codexHome);
+  assert.equal(config.configLoaded, true);
+  assert.equal(config.authLoaded, true);
+  assert.equal(config.modelProvider, "ai");
+  assert.equal(config.providerName, "ai");
+  assert.equal(config.providerBaseUrl, "https://api.example.test");
+  assert.equal(config.providerWireApi, "responses");
+  assert.equal(config.model, "gpt-5.5");
+  assert.equal(config.reasoningEffort, "xhigh");
+  assert.match(config.fingerprint, /^[a-f0-9]{16}$/);
+  assert.equal(JSON.stringify(config).includes("sk-secret"), false);
 });

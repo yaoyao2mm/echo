@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { config } from "../config.js";
 import { httpFetch, buildProxyEnv } from "./http.js";
+import { buildAgentProcessEnv } from "./agentProcessEnv.js";
 import {
   isVolcengineCodingPlanBaseUrl,
   volcengineCodingPlanModelInfo,
@@ -46,6 +48,7 @@ export function publicClaudeRuntime(backendConfig = config.claude) {
     supportedModels,
     unsupportedModels: [],
     allowedPermissionModes: normalizeAllowedPermissionModes(runtimeConfig.allowedPermissionModes),
+    supportedPermissionModes: ["strict", "approve", "full"],
     reasoningEffort: runtimeConfig.reasoningEffort,
     profile: permissionMode,
     permissionMode,
@@ -76,15 +79,12 @@ export function publicClaudeRuntime(backendConfig = config.claude) {
   };
 }
 
-export function buildClaudeEnv(backendConfig = config.claude) {
+export function buildClaudeEnv(backendConfig = config.claude, sourceEnv = process.env) {
   const runtimeConfig = backendConfig || config.claude;
-  const env = buildProxyEnv(process.env);
-  const next = {
-    ...env,
-    PATH: process.env.PATH || "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-    HOME: process.env.HOME || env.HOME || "",
-    LANG: process.env.LANG || "en_US.UTF-8"
-  };
+  const proxyEnv = buildProxyEnv(sourceEnv);
+  const next = buildAgentProcessEnv(proxyEnv, {
+    HOME: sourceEnv.HOME || proxyEnv.HOME || os.homedir()
+  });
   if (shouldUseIsolatedClaudeConfig(runtimeConfig)) {
     for (const key of Object.keys(next)) {
       if (key === "CLAUDE_CONFIG_DIR" || key.startsWith("ANTHROPIC_") || key.startsWith("CLAUDE_CODE_")) {

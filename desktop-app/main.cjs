@@ -7,8 +7,8 @@ const path = require("node:path");
 const rootDir = resolveRootDir();
 const settingsScript = path.join(rootDir, "scripts", "desktop-settings.js");
 const desktopAgentScript = path.join(rootDir, "src", "desktop-agent.js");
-const macAgentScript = path.join(rootDir, "scripts", "macos-desktop-agent.sh");
 const desktopUpdateScript = path.join(rootDir, "scripts", "desktop-update.sh");
+const networkDoctorScript = path.join(rootDir, "scripts", "network-doctor.js");
 const logsDir = path.join(os.homedir(), "Library", "Logs", "EchoVoice");
 const desktopAppLog = path.join(logsDir, "desktop-app.log");
 const appAgentOutLog = path.join(logsDir, "desktop-agent-app.out.log");
@@ -20,7 +20,6 @@ let settingsProcess = null;
 let appAgentProcess = null;
 let appAgentWanted = false;
 let appAgentRestartTimer = null;
-let launchAgentDetected = false;
 let settingsUrl = "";
 let stdoutBuffer = "";
 let stderrBuffer = "";
@@ -49,6 +48,7 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
+    maybeStartAppAgent().catch((error) => logApp(`maybeStartAppAgent second-instance failed ${error.message}`));
     showSettings();
   });
 }
@@ -104,12 +104,13 @@ function startSettingsServer() {
   logApp(`starting settings service ${settingsScript}`);
   settingsProcess = spawn(process.execPath, [settingsScript], {
     cwd: rootDir,
-    env: {
+    env: buildDesktopEnv({
+      ...readDotEnvFile(),
       ...process.env,
       ELECTRON_RUN_AS_NODE: "1",
       ECHO_SETTINGS_HOST: "127.0.0.1",
       ECHO_SETTINGS_PORT: "0"
-    },
+    }),
     stdio: ["ignore", "pipe", "pipe"]
   });
 
@@ -118,6 +119,11 @@ function startSettingsServer() {
     if (stdoutBuffer.includes("ECHO_DESKTOP_UPDATE_READY")) {
       settingsUpdateReady = true;
       logApp("settings service reported desktop update ready");
+    }
+    if (stdoutBuffer.includes("ECHO_DESKTOP_AGENT_RESTART_REQUESTED")) {
+      stdoutBuffer = stdoutBuffer.replaceAll("ECHO_DESKTOP_AGENT_RESTART_REQUESTED", "");
+      logApp("settings service requested app agent restart");
+      restartAppAgent();
     }
     const url = stdoutBuffer.match(/https?:\/\/127\.0\.0\.1:\d+\/\?key=[a-f0-9]+/i)?.[0];
     if (url && !settingsUrl) {
@@ -181,10 +187,10 @@ function openSettingsWindow(url) {
   }
 
   mainWindow = new BrowserWindow({
-    width: 1180,
-    height: 760,
-    minWidth: 940,
-    minHeight: 620,
+    width: 520,
+    height: 720,
+    minWidth: 440,
+    minHeight: 600,
     title: appDisplayName,
     backgroundColor: "#f6f7f8",
     webPreferences: {
@@ -260,25 +266,8 @@ function buildTrayMenu() {
       click: () => runDesktopUpdate()
     },
     {
-      label: "Switch From LaunchAgent To App Agent",
-      click: () => switchToAppAgent()
-    },
-    { type: "separator" },
-    {
-      label: "LaunchAgent: Start",
-      click: () => runAgentCommand("start")
-    },
-    {
-      label: "LaunchAgent: Stop",
-      click: () => runAgentCommand("stop")
-    },
-    {
-      label: "LaunchAgent: Restart",
-      click: () => runAgentCommand("restart")
-    },
-    {
       label: "Network Doctor",
-      click: () => runAgentCommand("doctor")
+      click: () => runNetworkDoctor()
     },
     {
       label: "Open Logs",
@@ -300,12 +289,6 @@ function showSettings() {
 
 async function maybeStartAppAgent() {
   if (readEnvFlag("ECHO_DESKTOP_APP_AGENT", true) === false) return;
-  if (process.platform === "darwin" && (await isLaunchAgentRunning())) {
-    launchAgentDetected = true;
-    refreshTray();
-    return;
-  }
-  launchAgentDetected = false;
   startAppAgent();
 }
 
@@ -343,7 +326,8 @@ function startAppAgent({ userInitiated = false } = {}) {
     refreshTray();
     if (!isQuitting && appAgentWanted) {
       clearTimeout(appAgentRestartTimer);
-      appAgentRestartTimer = setTimeout(() => startAppAgent(), 3000);
+      const restartDelayMs = code === 75 ? 500 : 3000;
+      appAgentRestartTimer = setTimeout(() => startAppAgent(), restartDelayMs);
     }
   });
 
@@ -376,41 +360,13 @@ function restartAppAgent() {
 }
 
 function restartAgentAfterUpdate() {
-  if (appAgentProcess || appAgentWanted) {
-    restartAppAgent();
-    return;
-  }
-  if (launchAgentDetected) runAgentCommand("restart");
-}
-
-function switchToAppAgent() {
-  execFile("bash", [macAgentScript, "stop"], { cwd: rootDir, timeout: 30000 }, (error, stdout, stderr) => {
-    if (error) {
-      dialog.showMessageBox({
-        type: "warning",
-        title: "Could not stop LaunchAgent",
-        message: "Could not stop LaunchAgent",
-        detail: `${stdout || ""}${stderr || error.message}`.trim().slice(-4000)
-      });
-    }
-    startAppAgent({ userInitiated: true });
-  });
+  restartAppAgent();
 }
 
 function agentStatusLabel() {
   if (appAgentProcess) return "app agent running";
   if (appAgentWanted) return "app agent restarting";
-  if (launchAgentDetected) return "LaunchAgent running";
   return "app agent stopped";
-}
-
-function isLaunchAgentRunning() {
-  return new Promise((resolve) => {
-    if (process.platform !== "darwin") return resolve(false);
-    execFile("launchctl", ["print", `gui/${process.getuid()}/com.echo.voice.desktop-agent`], { timeout: 5000 }, (error, stdout) => {
-      resolve(!error && /state = running/.test(stdout || ""));
-    });
-  });
 }
 
 function readEnvFlag(key, fallback) {
@@ -478,14 +434,45 @@ function buildDesktopEnv(env) {
     LOGNAME: env.LOGNAME || process.env.LOGNAME || process.env.USER || "",
     SHELL: env.SHELL || "/bin/zsh",
     CODEX_HOME: env.CODEX_HOME || path.join(home, ".codex"),
-    PATH: env.PATH || "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    PATH: normalizeDesktopPath(env.PATH, home),
     LANG: env.LANG || "en_US.UTF-8"
   };
 }
 
-function runAgentCommand(command) {
-  execFile("bash", [macAgentScript, command], { cwd: rootDir, timeout: 30000 }, (error, stdout, stderr) => {
-    const title = error ? `Echo ${command} failed` : `Echo ${command} finished`;
+function normalizeDesktopPath(value, home) {
+  const segments = String(value || "")
+    .split(path.delimiter)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  for (const segment of defaultDesktopPathSegments(home)) {
+    if (!segments.includes(segment)) segments.push(segment);
+  }
+
+  return segments.join(path.delimiter);
+}
+
+function defaultDesktopPathSegments(home) {
+  return [
+    path.join(home, ".local", "bin"),
+    path.join(home, "Library", "pnpm"),
+    path.join(home, ".cargo", "bin"),
+    path.join(home, ".bun", "bin"),
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin"
+  ];
+}
+
+function runNetworkDoctor() {
+  const env = buildDesktopEnv({ ...readDotEnvFile(), ...process.env, ELECTRON_RUN_AS_NODE: "1" });
+  execFile(process.execPath, [networkDoctorScript], { cwd: rootDir, env, timeout: 30000 }, (error, stdout, stderr) => {
+    const title = error ? "Echo network doctor failed" : "Echo network doctor finished";
     const detail = `${stdout || ""}${stderr || ""}`.trim() || (error ? error.message : "Done.");
     dialog.showMessageBox({
       type: error ? "error" : "info",
@@ -597,12 +584,8 @@ function createMenu() {
           click: () => runDesktopUpdate()
         },
         {
-          label: "Switch From LaunchAgent To App Agent",
-          click: () => switchToAppAgent()
-        },
-        {
           label: "Network Doctor",
-          click: () => runAgentCommand("doctor")
+          click: () => runNetworkDoctor()
         },
         { type: "separator" },
         { role: "quit" }

@@ -15,8 +15,8 @@
         if (localStorage.getItem("echoTheme") === "dark") document.documentElement.dataset.theme = "dark";
       } catch {}
     </script>
-    <link rel="manifest" href="/manifest.webmanifest?v=132" />
-    <link rel="stylesheet" href="/styles.css?v=132" />
+    <link rel="manifest" href="/manifest.webmanifest?v=135" />
+    <link rel="stylesheet" href="/styles.css?v=141" />
   </head>
   <body>
     <main class="shell">
@@ -36,6 +36,7 @@
           </button>
           <div class="topbar-brand-copy">
             <div class="topbar-title-row">
+              <span id="topbarEnvironmentAvatar" class="topbar-environment-avatar" aria-hidden="true" hidden>E</span>
               <h1 id="topbarContextTitle">Echo</h1>
               <span id="mobileStatusIndicator" class="mobile-status-indicator" aria-hidden="true"></span>
             </div>
@@ -70,43 +71,56 @@
                 <strong>快速指令</strong>
                 <span id="quickSkillsMeta">全局与当前项目</span>
               </div>
-              <button id="quickSkillNewButton" class="icon-button quick-skill-add" type="button" aria-label="新增快速指令" title="新增快速指令">
-                +
-              </button>
+              <div class="quick-skill-add-actions" aria-label="新增快速指令">
+                <button
+                  id="quickSkillNewGlobalButton"
+                  class="secondary quick-skill-add-choice"
+                  type="button"
+                  aria-label="新增全局快速指令"
+                  title="新增全局快速指令"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="1.8" />
+                    <path
+                      d="M3.8 12h16.4M12 3.8c2.1 2.3 3.2 5 3.2 8.2s-1.1 5.9-3.2 8.2M12 3.8c-2.1 2.3-3.2 5-3.2 8.2s1.1 5.9 3.2 8.2"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="1.8"
+                    />
+                  </svg>
+                </button>
+                <button
+                  id="quickSkillNewProjectButton"
+                  class="secondary quick-skill-add-choice"
+                  type="button"
+                  aria-label="新增项目快速指令"
+                  title="新增项目快速指令"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M3.8 7.8c0-1 .8-1.8 1.8-1.8h4l2 2h6.8c1 0 1.8.8 1.8 1.8v6.4c0 1-.8 1.8-1.8 1.8H5.6c-1 0-1.8-.8-1.8-1.8V7.8Z"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="1.8"
+                    />
+                  </svg>
+                </button>
+              </div>
             </div>
             <div id="quickSkillsList" class="quick-skills-list"></div>
             <form id="quickSkillForm" class="quick-skill-form" hidden>
               <input id="quickSkillId" type="hidden" />
+              <input id="quickSkillScope" type="hidden" value="global" />
               <div class="quick-skill-form-head">
                 <strong id="quickSkillFormTitle">编辑指令</strong>
               </div>
               <label class="quick-skill-field" for="quickSkillTitle">
                 <span class="quick-skill-field-label">名称</span>
                 <input id="quickSkillTitle" type="text" autocomplete="off" maxlength="80" />
-              </label>
-              <div class="quick-skill-form-row quick-skill-choice-row">
-                <div class="quick-skill-choice composer-inline-select">
-                  <span class="quick-skill-field-label">范围</span>
-                  <select id="quickSkillScope" aria-label="选择快捷指令范围">
-                    <option value="project">当前项目</option>
-                    <option value="global">全局</option>
-                  </select>
-                </div>
-                <div class="quick-skill-choice composer-inline-select">
-                  <span class="quick-skill-field-label">模式</span>
-                  <select id="quickSkillMode" aria-label="选择快捷指令模式">
-                    <option value="execute">执行</option>
-                    <option value="plan">计划</option>
-                  </select>
-                </div>
-              </div>
-              <label class="quick-skill-checkbox" for="quickSkillRequiresSession">
-                <input id="quickSkillRequiresSession" type="checkbox" />
-                <span>需要当前会话</span>
-              </label>
-              <label class="quick-skill-field" for="quickSkillDescription">
-                <span class="quick-skill-field-label">说明</span>
-                <input id="quickSkillDescription" type="text" autocomplete="off" maxlength="240" />
               </label>
               <label class="quick-skill-field" for="quickSkillPrompt">
                 <span class="quick-skill-field-label">指令</span>
@@ -175,6 +189,18 @@
         </div>
       </header>
 
+      <div id="agentSkills" class="agent-skills-popover-root" data-authenticated hidden>
+        <section id="agentSkillsPanel" class="agent-skills-panel" role="dialog" aria-label="已安装 Skills" hidden>
+          <div class="agent-skills-head">
+            <div>
+              <strong>Skills</strong>
+              <span id="agentSkillsMeta">Codex 与 Claude Code</span>
+            </div>
+          </div>
+          <div id="agentSkillsList" class="agent-skills-list"></div>
+        </section>
+      </div>
+
       <section id="loginPanel" class="auth-panel" hidden>
         <div>
           <h2>登录 Echo</h2>
@@ -214,11 +240,26 @@
         <button id="sessionBackdrop" class="session-backdrop" type="button" aria-label="关闭会话列表" hidden></button>
         <section id="openSpecPanel" class="open-spec-panel" role="dialog" aria-label="Open Spec" hidden>
           <div class="open-spec-head">
-            <div>
+            <div class="open-spec-run-page-heading">
+              <button id="openSpecBackButton" class="icon-button open-spec-run-back" type="button" aria-label="返回上一步" title="返回" hidden>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+                </svg>
+              </button>
+              <span>
               <strong id="openSpecTitle">Open Spec</strong>
               <span id="openSpecMeta">当前工程</span>
+              </span>
             </div>
             <div class="open-spec-head-actions">
+              <button id="openSpecOrchestrationButton" class="icon-button open-spec-orchestration" type="button" aria-label="编排 OpenSpec changes" title="编排" hidden>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="6" cy="6" r="1.75" fill="none" stroke="currentColor" stroke-width="1.55" />
+                  <circle cx="6" cy="18" r="1.75" fill="none" stroke="currentColor" stroke-width="1.55" />
+                  <circle cx="18" cy="12" r="1.75" fill="none" stroke="currentColor" stroke-width="1.55" />
+                  <path d="M7.8 6h2.4c2.2 0 2.7 1.4 2.7 3.1v5.8c0 1.7-1.2 3.1-2.7 3.1H7.8M12.9 12H16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.55" />
+                </svg>
+              </button>
               <button
                 id="openSpecExploreButton"
                 class="icon-button open-spec-explore"
@@ -276,7 +317,29 @@
           </div>
           <div id="openSpecStatus" class="open-spec-status" role="status"></div>
           <div id="openSpecOverview" class="open-spec-overview"></div>
+          <div id="openSpecRunProgress" class="open-spec-run-progress" hidden></div>
           <div id="openSpecTimeline" class="open-spec-timeline"></div>
+          <div id="openSpecOrchestrationActions" class="open-spec-orchestration-actions" hidden></div>
+        </section>
+        <section id="openSpecRunPage" class="open-spec-panel open-spec-run-page" role="dialog" aria-label="OpenSpec 编排详情" hidden>
+          <div class="open-spec-head">
+            <div class="open-spec-run-page-heading">
+              <button id="openSpecRunBackButton" class="icon-button open-spec-run-back" type="button" aria-label="返回 Open Spec" title="返回">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+                </svg>
+              </button>
+              <span><strong>编排详情</strong><small id="openSpecRunMeta">OpenSpec 编排</small></span>
+            </div>
+            <button id="openSpecRunCloseButton" class="icon-button open-spec-close" type="button" aria-label="关闭编排详情" title="关闭">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2" />
+              </svg>
+            </button>
+          </div>
+          <div id="openSpecRunStatus" class="open-spec-status" role="status"></div>
+          <div id="openSpecRunTimeline" class="open-spec-timeline orchestration-run-timeline"></div>
+          <div id="openSpecRunActions" class="open-spec-orchestration-actions" hidden></div>
         </section>
         <section id="fileBrowserPanel" class="file-browser-panel" role="dialog" aria-label="代码浏览" hidden>
           <div class="file-browser-head">
@@ -398,6 +461,13 @@
               <strong id="codexStatusText">等待桌面 agent</strong>
               <p id="codexQueueMeta" class="codex-runtime"></p>
             </div>
+            <div
+              id="agentEnvironmentList"
+              class="agent-environment-list"
+              role="listbox"
+              aria-label="桌面环境"
+              hidden
+            ></div>
             <div id="projectSheetList" class="project-sheet-list sidebar-project-list" role="listbox" aria-label="项目列表"></div>
             <div id="codexJobs" class="codex-jobs"></div>
             <form id="projectCreateForm" class="project-create-form" hidden>
@@ -406,78 +476,614 @@
               <button id="projectCreateSubmit" class="project-create-submit" type="submit">创建</button>
             </form>
             <p id="projectSheetStatus" class="sidebar-panel-note"></p>
-            <button id="newProjectButton" class="project-create-trigger" type="button">新建项目</button>
+            <div class="project-action-row">
+              <button id="newProjectButton" class="project-create-trigger" type="button">新建项目</button>
+              <button id="openExistingProjectButton" class="project-create-trigger" type="button">打开现有项目</button>
+            </div>
             <select id="codexProject" class="sr-only" tabindex="-1" aria-hidden="true"></select>
           </section>
 
-          <section class="sidebar-panel sidebar-panel-appearance">
-            <div class="sidebar-panel-head">
-              <strong>偏好</strong>
-            </div>
-            <label class="theme-switch" for="themeModeToggle">
-              <span class="theme-switch-copy">
-                <span class="theme-switch-title">暗黑模式</span>
-                <span class="theme-switch-subtitle">夜间低亮度显示</span>
+          <section class="sidebar-panel sidebar-panel-settings-entry" data-authenticated hidden>
+            <button
+              id="mobileSettingsButton"
+              class="sidebar-settings-trigger"
+              type="button"
+              aria-label="打开设置"
+              aria-controls="mobileSettingsPanel"
+              title="设置"
+            >
+              <span class="sidebar-settings-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M12 8.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6Z"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.7"
+                  />
+                  <path
+                    d="M19.4 15.1a8 8 0 0 0 .1-1.1 8 8 0 0 0-.1-1.1l2-1.5-2-3.4-2.4 1a7.7 7.7 0 0 0-1.9-1.1L14.8 5h-5.6l-.3 2.9A7.7 7.7 0 0 0 7 9L4.6 8l-2 3.4 2 1.5a8 8 0 0 0-.1 1.1 8 8 0 0 0 .1 1.1l-2 1.5 2 3.4 2.4-1a7.7 7.7 0 0 0 1.9 1.1l.3 2.9h5.6l.3-2.9A7.7 7.7 0 0 0 17 19l2.4 1 2-3.4-2-1.5Z"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linejoin="round"
+                    stroke-width="1.4"
+                  />
+                </svg>
               </span>
-              <input id="themeModeToggle" type="checkbox" role="switch" aria-label="暗黑模式" />
-              <span class="theme-switch-track" aria-hidden="true">
-                <span class="theme-switch-thumb">
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M20 14.2A7.5 7.5 0 0 1 9.8 4a8.5 8.5 0 1 0 10.2 10.2Z" />
-                  </svg>
-                </span>
-              </span>
-            </label>
-            <label class="theme-switch" for="worktreeModeToggle">
-              <span class="theme-switch-copy">
-                <span class="theme-switch-title">隔离 worktree</span>
-                <span id="worktreeModeSubtitle" class="theme-switch-subtitle">新会话默认独立执行</span>
-              </span>
-              <input id="worktreeModeToggle" type="checkbox" role="switch" aria-label="隔离 worktree" />
-              <span class="theme-switch-track" aria-hidden="true">
-                <span class="theme-switch-thumb">
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M4 7.5h6l2 2h8v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-9Z" />
-                  </svg>
-                </span>
-              </span>
-            </label>
+              <span>设置</span>
+            </button>
           </section>
 
-          <section class="sidebar-panel sidebar-panel-user">
-            <div class="sidebar-panel-head">
-              <strong>用户中心</strong>
+          <section id="mobileSettingsPanel" class="mcp-subpage mobile-settings-subpage" role="dialog" aria-modal="false" aria-label="设置" hidden>
+            <div class="mcp-page-head">
               <button
-                id="sidebarUserToggle"
-                class="icon-button sidebar-section-toggle"
+                id="mobileSettingsCloseButton"
+                class="icon-button topbar-quick-deploy mcp-back"
                 type="button"
-                aria-label="展开用户中心"
-                aria-controls="sidebarUserBody"
-                aria-expanded="false"
-                title="用户中心"
+                aria-label="返回项目"
+                title="返回项目"
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path
-                    d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm0 2c-3.314 0-6 1.79-6 4v1h12v-1c0-2.21-2.686-4-6-4Z"
-                    fill="currentColor"
+                    d="M15 5 8 12l7 7"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                  />
+                </svg>
+              </button>
+              <div class="mcp-head-copy">
+                <strong>设置</strong>
+                <span id="mobileSettingsMeta">Echo</span>
+              </div>
+              <span aria-hidden="true"></span>
+            </div>
+            <div class="mcp-page-body mobile-settings-body">
+              <section class="mcp-page-section">
+                <div class="mcp-section-label">外观</div>
+                <div class="mobile-settings-stack">
+                  <label class="theme-switch" for="themeModeToggle">
+                    <span class="theme-switch-copy">
+                      <span class="theme-switch-title">暗黑模式</span>
+                      <span class="theme-switch-subtitle">夜间低亮度显示</span>
+                    </span>
+                    <input id="themeModeToggle" type="checkbox" role="switch" aria-label="暗黑模式" />
+                    <span class="theme-switch-track" aria-hidden="true">
+                      <span class="theme-switch-thumb">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M20 14.2A7.5 7.5 0 0 1 9.8 4a8.5 8.5 0 1 0 10.2 10.2Z" />
+                        </svg>
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              </section>
+              <section class="mcp-page-section">
+                <div class="mcp-section-label">编程</div>
+                <div class="mobile-settings-stack">
+                  <label class="theme-switch" for="worktreeModeToggle">
+                    <span class="theme-switch-copy">
+                      <span class="theme-switch-title">隔离 worktree</span>
+                      <span id="worktreeModeSubtitle" class="theme-switch-subtitle">按需手动开启</span>
+                    </span>
+                    <input id="worktreeModeToggle" type="checkbox" role="switch" aria-label="隔离 worktree" />
+                    <span class="theme-switch-track" aria-hidden="true">
+                      <span class="theme-switch-thumb">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M4 7.5h6l2 2h8v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-9Z" />
+                        </svg>
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              </section>
+              <section class="mcp-page-section">
+                <div class="mcp-section-label">集成</div>
+                <div class="mobile-settings-stack">
+                  <div id="mcpManager" class="mcp-preference" data-authenticated hidden>
+                    <button
+                      id="mcpButton"
+                      class="mcp-preference-trigger"
+                      type="button"
+                      aria-label="配置 MCP"
+                      aria-expanded="false"
+                      aria-haspopup="dialog"
+                      aria-controls="mcpPanel"
+                      title="配置 MCP"
+                    >
+                      <span class="theme-switch-copy">
+                        <span class="theme-switch-title">MCP</span>
+                        <span id="mcpPreferenceSubtitle" class="theme-switch-subtitle">等待桌面 agent 同步</span>
+                      </span>
+                      <span class="mcp-preference-control" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                          <path
+                            d="M9 6h9M6 6h.01M9 12h9M6 12h.01M9 18h9M6 18h.01"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                          />
+                        </svg>
+                      </span>
+                    </button>
+                    <select id="codexMcpProfile" hidden tabindex="-1" aria-hidden="true" aria-label="选择 MCP Profile"></select>
+                  </div>
+                  <div id="agentSkillManager" class="mcp-preference agent-skill-preference" data-authenticated hidden>
+                    <button
+                      id="agentSkillButton"
+                      class="mcp-preference-trigger agent-skill-preference-trigger"
+                      type="button"
+                      aria-label="管理 Skills"
+                      aria-expanded="false"
+                      aria-haspopup="dialog"
+                      aria-controls="agentSkillPanel"
+                      title="管理 Skills"
+                    >
+                      <span class="theme-switch-copy">
+                        <span class="theme-switch-title">Skills</span>
+                        <span id="agentSkillPreferenceSubtitle" class="theme-switch-subtitle">等待桌面 agent 同步</span>
+                      </span>
+                      <span class="mcp-preference-control" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                          <path
+                            d="M12 3.5 13.7 8l4.6 1.7-4.6 1.7L12 16l-1.7-4.6-4.6-1.7L10.3 8 12 3.5ZM5.4 14.4l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8.8-2.1Z"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="1.8"
+                          />
+                        </svg>
+                      </span>
+                    </button>
+                  </div>
+                  <div id="desktopPluginManager" class="mcp-preference desktop-plugin-preference" data-authenticated hidden>
+                    <button
+                      id="desktopPluginButton"
+                      class="mcp-preference-trigger"
+                      type="button"
+                      aria-label="管理插件"
+                      aria-expanded="false"
+                      aria-haspopup="dialog"
+                      aria-controls="desktopPluginPanel"
+                      title="管理插件"
+                    >
+                      <span class="theme-switch-copy">
+                        <span class="theme-switch-title">插件</span>
+                        <span id="desktopPluginPreferenceSubtitle" class="theme-switch-subtitle">等待桌面 agent 同步</span>
+                      </span>
+                      <span class="mcp-preference-control" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                          <path d="M8 4h3v4h2V4h3v4h2v4h-2v3h-3v-3h-2v3H8v-3H6V8h2V4Z" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.7" />
+                        </svg>
+                      </span>
+                    </button>
+                  </div>
+                  <div id="adminManager" class="mcp-preference admin-preference" data-authenticated hidden>
+                    <button
+                      id="adminButton"
+                      class="mcp-preference-trigger admin-preference-trigger"
+                      type="button"
+                      aria-label="管理访问"
+                      aria-expanded="false"
+                      aria-haspopup="dialog"
+                      aria-controls="adminPanel"
+                      title="管理访问"
+                    >
+                      <span class="theme-switch-copy">
+                        <span class="theme-switch-title">访问管理</span>
+                        <span id="adminPreferenceSubtitle" class="theme-switch-subtitle">批准哪些用户可使用这台电脑</span>
+                      </span>
+                      <span class="mcp-preference-control" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                          <path
+                            d="M9.8 11.2a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8ZM4.2 19.2c0-3.1 2.5-5.2 5.6-5.2s5.6 2.1 5.6 5.2M16 10.8a2.7 2.7 0 1 0 0-5.4M16.8 14.1c1.8.4 3 1.9 3 4"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="1.8"
+                          />
+                        </svg>
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </section>
+              <section class="mcp-page-section">
+                <div class="mcp-section-label">账户</div>
+                <div class="mobile-settings-stack">
+                  <div id="accountManager" class="mcp-preference account-preference" data-authenticated hidden>
+                    <button
+                      id="accountButton"
+                      class="mcp-preference-trigger account-preference-trigger"
+                      type="button"
+                      aria-label="打开用户中心"
+                      aria-expanded="false"
+                      aria-haspopup="dialog"
+                      aria-controls="accountPanel"
+                      title="用户中心"
+                    >
+                      <span class="theme-switch-copy">
+                        <span class="theme-switch-title">账户</span>
+                        <span id="accountPreferenceSubtitle" class="theme-switch-subtitle">已连接桌面端</span>
+                      </span>
+                      <span class="mcp-preference-control" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                          <path
+                            d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm0 2c-3.3 0-6 1.8-6 4v1h12v-1c0-2.2-2.7-4-6-4Z"
+                            fill="currentColor"
+                          />
+                        </svg>
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </section>
+              <section class="mcp-page-section mobile-settings-future" data-settings-section="extensions" hidden></section>
+            </div>
+          </section>
+
+          <section id="projectImportPanel" class="mcp-subpage project-import-subpage" role="dialog" aria-modal="false" aria-label="打开现有项目" hidden>
+            <div class="mcp-page-head">
+              <button
+                id="projectImportCloseButton"
+                class="icon-button topbar-quick-deploy mcp-back"
+                type="button"
+                aria-label="返回项目"
+                title="返回项目"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M15 5 8 12l7 7"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                  />
+                </svg>
+              </button>
+              <div class="mcp-head-copy">
+                <strong>打开现有项目</strong>
+                <span id="projectImportMeta">选择桌面开放的位置</span>
+              </div>
+              <button
+                id="projectImportRefreshButton"
+                class="icon-button topbar-quick-deploy mcp-refresh"
+                type="button"
+                aria-label="刷新目录"
+                title="刷新目录"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M20 6v5h-5M4 18v-5h5M18.1 9a6.5 6.5 0 0 0-11-2.5L4 9.5M5.9 15a6.5 6.5 0 0 0 11 2.5L20 14.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.8"
                   />
                 </svg>
               </button>
             </div>
-            <div id="sidebarUserBody" class="sidebar-user-body" hidden>
-              <div class="sidebar-user-card">
-                <div class="sidebar-user-identity">
-                  <span id="userBadge" class="user-badge" hidden></span>
-                  <p id="sidebarUserMeta" class="sidebar-user-meta">登录后可查看账号与配对状态。</p>
-                </div>
-                <div class="sidebar-user-actions">
-                  <button id="openPairingButton" class="top-pair-button" type="button" hidden>扫码配对</button>
-                  <button id="refreshStatus" class="secondary compact-action" type="button" hidden>刷新状态</button>
-                  <button id="logoutButton" class="top-logout-button" type="button" hidden>退出</button>
-                </div>
-              </div>
+            <div class="mcp-page-body project-import-body">
+              <section class="mcp-page-section">
+                <div class="mcp-section-label">位置</div>
+                <div id="projectImportRoots" class="project-import-roots"></div>
+              </section>
+              <section class="mcp-page-section project-import-browser">
+                <div id="projectImportBreadcrumbs" class="project-import-breadcrumbs"></div>
+                <div id="projectImportList" class="project-import-list"></div>
+              </section>
+            </div>
+            <div class="mcp-actions project-import-actions">
+              <p id="projectImportStatus" class="mcp-status" role="status"></p>
+              <button id="projectImportSelectButton" class="primary compact-action" type="button">打开此目录</button>
             </div>
           </section>
+
+          <section id="mcpPanel" class="mcp-subpage" role="dialog" aria-modal="false" aria-label="MCP 配置" hidden>
+            <div class="mcp-page-head">
+              <button
+                id="mcpCloseButton"
+                class="icon-button topbar-quick-deploy mcp-back"
+                type="button"
+                aria-label="返回设置"
+                title="返回设置"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M15 5 8 12l7 7"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                  />
+                </svg>
+              </button>
+              <div class="mcp-head-copy">
+                <strong>MCP 配置</strong>
+                <span id="mcpMeta">等待桌面 agent 同步</span>
+              </div>
+              <button
+                id="mcpRefreshButton"
+                class="icon-button topbar-quick-deploy mcp-refresh"
+                type="button"
+                aria-label="刷新 MCP 状态"
+                title="刷新 MCP 状态"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M20 6v5h-5M4 18v-5h5M18.1 9a6.5 6.5 0 0 0-11-2.5L4 9.5M5.9 15a6.5 6.5 0 0 0 11 2.5L20 14.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.8"
+                  />
+                </svg>
+              </button>
+            </div>
+            <div class="mcp-page-body">
+              <section class="mcp-page-section mcp-library-section">
+                <div class="mcp-section-label">本机 MCP</div>
+                <div id="mcpProfileList" class="mcp-server-grid" aria-label="本机 MCP"></div>
+              </section>
+              <section class="mcp-page-section mcp-detail-home" hidden>
+                <div id="mcpDetailPanel" class="mcp-detail-panel"></div>
+                <div id="mcpTargetList" class="mcp-target-list" aria-label="应用到后端"></div>
+              </section>
+            </div>
+            <div class="mcp-actions">
+              <p id="mcpStatus" class="mcp-status" role="status"></p>
+              <button id="mcpApplyButton" class="primary compact-action" type="button">应用到桌面</button>
+            </div>
+          </section>
+
+          <section id="agentSkillPanel" class="mcp-subpage agent-skill-subpage" role="dialog" aria-modal="false" aria-label="Skills 管理" hidden>
+            <div class="mcp-page-head">
+              <button
+                id="agentSkillCloseButton"
+                class="icon-button topbar-quick-deploy mcp-back"
+                type="button"
+                aria-label="返回设置"
+                title="返回设置"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M15 5 8 12l7 7"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                  />
+                </svg>
+              </button>
+              <div class="mcp-head-copy">
+                <strong>Skills 管理</strong>
+                <span id="agentSkillMeta">等待桌面 agent 同步</span>
+              </div>
+              <button
+                id="agentSkillImportButton"
+                class="icon-button topbar-quick-deploy mcp-refresh agent-skill-import-toggle"
+                type="button"
+                aria-label="添加 Skill"
+                title="添加 Skill"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M12 5v14M5 12h14"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-width="2"
+                  />
+                </svg>
+              </button>
+              <button
+                id="agentSkillRefreshButton"
+                class="icon-button topbar-quick-deploy mcp-refresh"
+                type="button"
+                aria-label="刷新 Skills"
+                title="刷新 Skills"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M20 6v5h-5M4 18v-5h5M18.1 9a6.5 6.5 0 0 0-11-2.5L4 9.5M5.9 15a6.5 6.5 0 0 0 11 2.5L20 14.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.8"
+                  />
+                </svg>
+              </button>
+            </div>
+            <div class="mcp-page-body">
+              <form id="agentSkillImportForm" class="agent-skill-import-form" hidden>
+                <label class="agent-skill-import-field" for="agentSkillImportUrl">
+                  <span>GitHub URL</span>
+                  <input id="agentSkillImportUrl" type="url" inputmode="url" autocomplete="off" placeholder="github.com/owner/repo/tree/main/skill" />
+                </label>
+                <div class="agent-skill-import-actions">
+                  <button id="agentSkillImportCancelButton" class="secondary compact-action" type="button">取消</button>
+                  <button id="agentSkillImportSubmitButton" class="primary compact-action" type="submit">添加</button>
+                </div>
+              </form>
+              <section class="mcp-page-section agent-skill-overview-section">
+                <div class="mcp-section-label">概览</div>
+                <div id="agentSkillOverview" class="agent-skill-overview" aria-label="Skills 概览"></div>
+              </section>
+              <section class="mcp-page-section">
+                <div class="mcp-section-label">本机 Agent Skills</div>
+                <div id="agentSkillList" class="mcp-server-grid agent-skill-grid" aria-label="本机 Agent Skills"></div>
+              </section>
+              <section class="mcp-page-section agent-skill-detail-home" hidden>
+                <div id="agentSkillDetail" class="mcp-detail-panel agent-skill-detail"></div>
+                <div id="agentSkillTargetList" class="mcp-target-list agent-skill-target-list" aria-label="同步到后端"></div>
+              </section>
+            </div>
+            <div class="mcp-actions agent-skill-actions">
+              <p id="agentSkillStatus" class="mcp-status" role="status"></p>
+            </div>
+          </section>
+
+          <section id="desktopPluginPanel" class="mcp-subpage desktop-plugin-subpage" role="dialog" aria-modal="false" aria-label="插件管理" hidden>
+            <div class="mcp-page-head">
+              <button id="desktopPluginCloseButton" class="icon-button topbar-quick-deploy mcp-back" type="button" aria-label="返回设置" title="返回设置">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M15 5 8 12l7 7" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" />
+                </svg>
+              </button>
+              <div class="mcp-head-copy">
+                <strong>插件</strong>
+                <span id="desktopPluginMeta">等待桌面 agent 同步</span>
+              </div>
+              <button id="desktopPluginRefreshButton" class="icon-button topbar-quick-deploy mcp-refresh" type="button" aria-label="刷新插件" title="刷新插件">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M20 6v5h-5M4 18v-5h5M18.1 9a6.5 6.5 0 0 0-11-2.5L4 9.5M5.9 15a6.5 6.5 0 0 0 11 2.5L20 14.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+                </svg>
+              </button>
+            </div>
+            <div class="mcp-page-body">
+              <section class="mcp-page-section desktop-plugin-overview-section">
+                <div class="mcp-section-label">概览</div>
+                <div id="desktopPluginOverview" class="agent-skill-overview desktop-plugin-overview" aria-label="插件概览"></div>
+              </section>
+              <section class="mcp-page-section">
+                <div class="mcp-section-label">桌面插件</div>
+                <div id="desktopPluginList" class="desktop-plugin-list"></div>
+              </section>
+            </div>
+            <div class="mcp-actions desktop-plugin-actions">
+              <p id="desktopPluginStatus" class="mcp-status" role="status"></p>
+            </div>
+          </section>
+
+          <section id="adminPanel" class="mcp-subpage admin-subpage" role="dialog" aria-modal="false" aria-label="访问管理" hidden>
+            <div class="mcp-page-head">
+              <button
+                id="adminCloseButton"
+                class="icon-button topbar-quick-deploy mcp-back"
+                type="button"
+                aria-label="返回设置"
+                title="返回设置"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M15 5 8 12l7 7"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                  />
+                </svg>
+              </button>
+              <div class="mcp-head-copy">
+                <strong>访问管理</strong>
+                <span id="adminMeta">管理哪些用户可以使用这台电脑</span>
+              </div>
+              <button
+                id="adminRefreshButton"
+                class="icon-button topbar-quick-deploy mcp-refresh"
+                type="button"
+                aria-label="刷新访问状态"
+                title="刷新访问状态"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M20 6v5h-5M4 18v-5h5M18.1 9a6.5 6.5 0 0 0-11-2.5L4 9.5M5.9 15a6.5 6.5 0 0 0 11 2.5L20 14.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.8"
+                  />
+                </svg>
+              </button>
+            </div>
+            <div class="mcp-page-body">
+              <section class="mcp-page-section">
+                <div class="mcp-section-label">当前 agent</div>
+                <div id="adminAgentList" class="admin-agent-list" aria-label="当前 agent"></div>
+              </section>
+              <section class="mcp-page-section">
+                <div class="mcp-section-label">可访问用户</div>
+                <div id="adminUserList" class="mcp-server-grid admin-user-grid" aria-label="可访问用户列表"></div>
+              </section>
+              <section class="mcp-page-section admin-detail-home" hidden>
+                <div id="adminUserDetail" class="mcp-detail-panel admin-user-detail"></div>
+              </section>
+            </div>
+            <div class="mcp-actions admin-actions">
+              <p id="adminStatus" class="mcp-status" role="status"></p>
+              <button id="adminApproveButton" class="primary compact-action admin-approve-inline" type="button" disabled>批准</button>
+            </div>
+          </section>
+
+          <section id="accountPanel" class="mcp-subpage account-subpage" role="dialog" aria-modal="false" aria-label="用户中心" hidden>
+            <div class="mcp-page-head">
+              <button
+                id="accountCloseButton"
+                class="icon-button topbar-quick-deploy mcp-back"
+                type="button"
+                aria-label="返回设置"
+                title="返回设置"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M15 5 8 12l7 7"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                  />
+                </svg>
+              </button>
+              <div class="mcp-head-copy">
+                <strong>用户中心</strong>
+                <span>账号与当前桌面配对</span>
+              </div>
+              <span class="mcp-head-spacer" aria-hidden="true"></span>
+            </div>
+            <div class="mcp-page-body">
+              <section class="mcp-page-section">
+                <div id="accountDetail" class="mcp-detail-panel account-detail">
+                  <div class="mcp-detail-head">
+                    <span class="mcp-detail-icon account-avatar" aria-hidden="true">
+                      <svg viewBox="0 0 24 24">
+                        <path
+                          d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm0 2c-3.3 0-6 1.8-6 4v1h12v-1c0-2.2-2.7-4-6-4Z"
+                          fill="currentColor"
+                        />
+                      </svg>
+                    </span>
+                    <div>
+                      <strong id="userBadge" hidden></strong>
+                      <span id="sidebarUserMeta">登录后显示账号状态。</span>
+                    </div>
+                    <span class="mcp-detail-badge">账户</span>
+                  </div>
+                </div>
+              </section>
+            </div>
+            <div class="mcp-actions account-actions">
+              <button id="openPairingButton" class="primary compact-action" type="button" hidden>重新配对</button>
+              <button id="refreshStatus" class="secondary compact-action" type="button" hidden>刷新</button>
+              <button id="logoutButton" class="secondary compact-action" type="button" hidden>退出</button>
+            </div>
+          </section>
+
         </aside>
 
         <section class="codex-main" aria-label="当前 agent 会话">
@@ -500,15 +1106,25 @@
 
           <section class="composer">
             <div class="composer-shell">
-              <div id="turnActivityLine" class="turn-activity-line" aria-live="polite" hidden>
-                <span class="turn-activity-dot" aria-hidden="true"></span>
-                <span class="turn-activity-label">终端</span>
-                <span id="turnActivityText" class="turn-activity-text"></span>
-              </div>
               <div id="contextUsageDetailsLine" class="context-usage-details-line" aria-live="polite" hidden></div>
               <div class="composer-statusbar" aria-label="输入状态">
                 <div class="composer-status-meta">
-                  <button id="composerAttachmentButton" class="composer-status-action" type="button" aria-label="附加截图">
+                  <button
+                    id="composerPlanModeButton"
+                    class="composer-mode-switch"
+                    type="button"
+                    role="switch"
+                    aria-label="Plan mode 关闭"
+                    aria-checked="false"
+                    title="Plan mode 关闭"
+                  >
+                    <span class="composer-mode-switch-track" aria-hidden="true">
+                      <span class="composer-mode-switch-thumb">
+                        <span class="composer-mode-switch-mark">P</span>
+                      </span>
+                    </span>
+                  </button>
+                  <button id="composerAttachmentButton" class="composer-status-action" type="button" aria-label="附加截图" title="附加截图">
                     <svg viewBox="0 0 24 24" aria-hidden="true">
                       <path
                         d="M8.5 12.5 15 6a3.5 3.5 0 1 1 5 5l-8.5 8.5a5 5 0 0 1-7-7l9-9"
@@ -520,22 +1136,44 @@
                       />
                     </svg>
                   </button>
-                  <button
-                    id="composerPlanModeButton"
-                    class="composer-status-action composer-mode-button"
-                    type="button"
-                    aria-label="进入计划模式"
-                    aria-pressed="false"
-                    title="进入计划模式"
-                  >
+                  <button id="composerFileAttachmentButton" class="composer-status-action" type="button" aria-label="附加文件" title="附加文件">
                     <svg viewBox="0 0 24 24" aria-hidden="true">
                       <path
-                        d="M8 6.5h10M8 12h10M8 17.5h10M4.8 6.5h.1M4.8 12h.1M4.8 17.5h.1"
+                        d="M14 3.5H7.5A2.5 2.5 0 0 0 5 6v12a2.5 2.5 0 0 0 2.5 2.5h9A2.5 2.5 0 0 0 19 18V8.5L14 3.5Z"
                         fill="none"
                         stroke="currentColor"
                         stroke-linecap="round"
                         stroke-linejoin="round"
-                        stroke-width="2"
+                        stroke-width="1.8"
+                      />
+                      <path
+                        d="M14 3.5v3A2.5 2.5 0 0 0 16.5 9H19"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="1.8"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    id="agentSkillsButton"
+                    class="composer-status-action agent-skills-trigger"
+                    type="button"
+                    aria-label="打开已安装 Skills"
+                    aria-haspopup="dialog"
+                    aria-expanded="false"
+                    aria-controls="agentSkillsPanel"
+                    title="已安装 Skills"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M12 3.5 13.7 8l4.6 1.7-4.6 1.7L12 16l-1.7-4.6-4.6-1.7L10.3 8 12 3.5ZM5.4 14.4l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8.8-2.1ZM18.5 14.2l.7 1.7 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7.7-1.7Z"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="1.8"
                       />
                     </svg>
                   </button>
@@ -549,36 +1187,13 @@
                     aria-controls="contextUsageDetailsLine"
                     title="上下文使用暂未同步"
                   ></button>
-                  <button
-                    id="compactContextButton"
-                    class="composer-status-action"
-                    type="button"
-                    aria-label="压缩上下文"
-                    title="压缩上下文"
-                    disabled
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path
-                        d="M8 4v4H4M16 4v4h4M8 20v-4H4M16 20v-4h4M9 9l-5-5M15 9l5-5M9 15l-5 5M15 15l5 5"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="1.8"
-                      />
-                    </svg>
-                  </button>
                 </div>
                 <div class="composer-status-right">
-                  <button
+                  <span
                     id="composerStatusText"
                     class="composer-status-text"
-                    type="button"
                     aria-live="polite"
-                    aria-expanded="false"
-                    aria-controls="turnActivityLine"
-                    disabled
-                  ></button>
+                  ></span>
                   <button
                     id="stopCodexTurnButton"
                     class="composer-status-action session-stop-action"
@@ -620,13 +1235,14 @@
               </div>
             </div>
             <input id="composerAttachmentInput" class="sr-only" type="file" accept="image/*" multiple />
+            <input id="composerFileAttachmentInput" class="sr-only" type="file" multiple />
           </section>
         </section>
       </section>
     </main>
 
-    <script src="/vendor/markdown-it-14.1.0.min.js?v=132"></script>
-    <script src="/vendor/dompurify-3.2.6.min.js?v=132"></script>
-    <script src="/app.js?v=132" type="module"></script>
+    <script src="/vendor/markdown-it-14.1.0.min.js?v=135"></script>
+    <script src="/vendor/dompurify-3.2.6.min.js?v=135"></script>
+    <script src="/app.js?v=142" type="module"></script>
   </body>
 </html>

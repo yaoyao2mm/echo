@@ -15,7 +15,7 @@ The system SHALL expose the mobile Open Spec entry only for the currently select
 The system SHALL generate OpenSpec summaries on the desktop agent from the selected allowlisted workspace and MUST NOT allow the mobile client to provide arbitrary filesystem paths for OpenSpec reading.
 
 #### Scenario: Mobile requests OpenSpec summary
-- **WHEN** the mobile client requests the OpenSpec summary for a selected `projectId`
+- **WHEN** the mobile client requests the OpenSpec summary for a selected `projectId` and `targetAgentId`
 - **THEN** the relay queues the request for the owning desktop agent and the desktop agent resolves only the fixed OpenSpec directory candidates inside the advertised workspace
 
 #### Scenario: OpenSpec path would escape the workspace

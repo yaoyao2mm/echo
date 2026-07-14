@@ -1,7 +1,8 @@
 import {
   normalizeAllowedPermissionModes,
   normalizePermissionMode,
-  normalizeSupportedModels
+  normalizeSupportedModels,
+  supportedPermissionModesForBackend
 } from "./codexRuntime.js";
 
 export const backendAdapterContractVersion = "echo.backend-adapter.v1";
@@ -78,6 +79,13 @@ export function normalizeBackendSnapshot(snapshot = {}, defaults = {}) {
     allowedPermissionModes: normalizeAllowedPermissionModes(
       normalizeStringList(normalized.allowedPermissionModes ?? fallback.allowedPermissionModes, [])
     ),
+    supportedPermissionModes: supportedPermissionModesForBackend({
+      ...fallback,
+      ...normalized,
+      backendId,
+      provider,
+      supportedPermissionModes: normalized.supportedPermissionModes ?? fallback.supportedPermissionModes
+    }),
     reasoningEffort: stringValue(normalized.reasoningEffort ?? normalized.effort ?? fallback.reasoningEffort, "").toLowerCase(),
     profile: stringValue(normalized.profile ?? fallback.profile, ""),
     permissionMode: normalizePermissionMode(normalized.permissionMode || normalized.profile || fallback.permissionMode || fallback.profile),

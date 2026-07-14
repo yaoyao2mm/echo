@@ -6,6 +6,9 @@ import {
 } from "./backendAdapterContract.js";
 import { ClaudeCodeBackendAdapter } from "./claudeCodeBackendAdapter.js";
 import { CodexBackendAdapter } from "./codexBackendAdapter.js";
+import { agentSkillRegistry } from "./agentSkills.js";
+import { desktopPluginRegistry } from "./desktopPlugins.js";
+import { mcpRuntimeSnapshot, refreshMcpToolSignatures } from "./mcpConfig.js";
 
 export function createDesktopBackends({ agentId }) {
   const backends = new Map();
@@ -39,11 +42,26 @@ export function createDesktopRuntimeMap(backends, runtimeOptions = {}) {
   return runtimes;
 }
 
-export function desktopRuntimeSnapshot(backends) {
+export function desktopRuntimeSnapshot(backends, options = {}) {
+  const skillRegistry = agentSkillRegistry(options);
+  const plugins = desktopPluginRegistry(options);
+  const installedSkills = skillRegistry.installedSkills;
+  const mcp = mcpRuntimeSnapshot();
+  const orchestrationMaxConcurrency = normalizeConcurrency(options.sessionConcurrency);
   const snapshots = Array.from(backends.values())
     .map((adapter) => {
       const snapshot = adapter.snapshot();
-      return assertBackendSnapshotContract(snapshot, { backendId: snapshot?.backendId });
+      const normalized = assertBackendSnapshotContract(snapshot, { backendId: snapshot?.backendId });
+      return {
+        ...normalized,
+        capabilities: {
+          ...(normalized.capabilities || {}),
+          orchestration: { maxConcurrency: orchestrationMaxConcurrency }
+        },
+        installedSkills,
+        agentSkills: skillRegistry,
+        plugins
+      };
     })
     .filter(Boolean);
   const primary = selectPrimarySnapshot(snapshots);
@@ -51,8 +69,17 @@ export function desktopRuntimeSnapshot(backends) {
   return {
     ...primary,
     defaultBackendId: primary.backendId,
+    installedSkills,
+    agentSkills: skillRegistry,
+    plugins,
+    mcp,
     backends: snapshots
   };
+}
+
+function normalizeConcurrency(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(8, Math.trunc(parsed))) : 1;
 }
 
 export async function refreshDesktopBackendCapabilities(backends, options = {}) {
@@ -64,7 +91,8 @@ export async function refreshDesktopBackendCapabilities(backends, options = {}) 
       })
     )
   );
-  return desktopRuntimeSnapshot(backends);
+  await refreshMcpToolSignatures({ force: true }).catch(() => {});
+  return desktopRuntimeSnapshot(backends, options);
 }
 
 function selectPrimarySnapshot(snapshots = []) {
